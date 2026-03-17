@@ -1,0 +1,4 @@
+# Chess programming & ML stack (torch installed separately with CUDA)
+numpy>=1.24.0
+python-chess>=1.999
+h5py>=3.8.0
