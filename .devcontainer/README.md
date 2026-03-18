@@ -1,5 +1,6 @@
 # Eloquence devcontainer
 
-- **Runtime:** Uses `runc` (no GPU) so the container starts on any host. If you see `nvidia-container-cli: initialization error`, remove the existing container and recreate:  
+- **Default:** Uses `--gpus all` so the container has access to the host’s NVIDIA GPU. The host must have the NVIDIA driver and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed.
+- **CPU-only (no GPU):** In `devcontainer.json` set `runArgs` to `["--runtime=runc"]`, then recreate the container.
+- **Recreate container after changing runArgs:**  
   `devcontainer up --workspace-folder . --remove-existing-container`
-- **GPU:** To use an NVIDIA GPU, change `runArgs` in `devcontainer.json` to `["--gpus=all"]` (remove `--runtime=runc`), ensure the host has the NVIDIA driver and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html), then rebuild.

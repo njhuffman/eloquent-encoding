@@ -55,14 +55,8 @@ All tunable constants (split ratios, skip probs, mask range, embedding dim, batc
 
 ## Dependencies
 
-- **Already in repo** `requirements.txt`: `numpy`, `python-chess`, `h5py`, `tqdm`.
-- **Training** requires **PyTorch** (with CUDA recommended). Install separately, e.g.:
-
-  ```bash
-  pip install torch
-  ```
-
-  or see [pytorch.org](https://pytorch.org) for CUDA builds.
+- **Already in repo** `requirements.txt`: `numpy`, `python-chess`, `h5py`, `tqdm`, `torch`.
+- **GPU**: Training uses CUDA automatically when available (faster). For a GPU build of PyTorch with CUDA, install from [pytorch.org](https://pytorch.org) (e.g. `pip install torch --index-url https://download.pytorch.org/whl/cu121` for CUDA 12.1). On GPU, mixed-precision (AMP) is enabled by default; use `--no-amp` to disable. Use `--device cuda:0` to pick a specific GPU. To sanity-check GPU training, run `python -m embedding.scripts.test_train_gpu` (runs a few steps on GPU if available, else CPU).
 
 ## File layout
 

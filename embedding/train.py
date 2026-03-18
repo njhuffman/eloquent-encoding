@@ -36,6 +36,13 @@ def main() -> int:
     parser.add_argument("--lr", type=float, default=LEARNING_RATE, help=f"Learning rate (default {LEARNING_RATE})")
     parser.add_argument("--checkpoint-dir", type=Path, default=Path(CHECKPOINT_DIR), help="Where to save checkpoints")
     parser.add_argument("--workers", type=int, default=DATALOADER_NUM_WORKERS, help="DataLoader workers")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device: cuda, cuda:0, cpu, or leave unset to auto-select (prefer GPU)",
+    )
+    parser.add_argument("--no-amp", action="store_true", help="Disable mixed-precision training (slower on GPU)")
     args = parser.parse_args()
 
     if not args.train_h5.exists():
@@ -46,8 +53,18 @@ def main() -> int:
         return 1
 
     args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}", file=sys.stderr)
+
+    if args.device is not None:
+        device = torch.device(args.device)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda" and not torch.cuda.is_available():
+        print("Error: --device cuda requested but CUDA is not available (no NVIDIA GPU/driver?).", file=sys.stderr)
+        return 1
+    use_amp = not args.no_amp and device.type == "cuda"
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+    print(f"Using device: {device} (mixed precision: {use_amp})", file=sys.stderr)
 
     train_loader, val_loader = get_dataloaders(
         args.train_h5,
@@ -59,6 +76,7 @@ def main() -> int:
 
     model = ChessMAE().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    scaler = torch.amp.GradScaler("cuda") if use_amp else None
     best_val_loss = float("inf")
 
     for epoch in range(1, args.epochs + 1):
@@ -70,10 +88,18 @@ def main() -> int:
             mask = mask.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             optimizer.zero_grad()
-            _, pred = model(enc, mask)
-            loss = masked_mse_loss(pred, target, mask)
-            loss.backward()
-            optimizer.step()
+            if use_amp:
+                with torch.amp.autocast("cuda"):
+                    _, pred = model(enc, mask)
+                    loss = masked_mse_loss(pred, target, mask)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                _, pred = model(enc, mask)
+                loss = masked_mse_loss(pred, target, mask)
+                loss.backward()
+                optimizer.step()
             train_loss += loss.item()
             n_batches += 1
             if (bi + 1) % LOG_INTERVAL == 0:
@@ -91,8 +117,13 @@ def main() -> int:
                 enc = enc.to(device, non_blocking=True)
                 mask = mask.to(device, non_blocking=True)
                 target = target.to(device, non_blocking=True)
-                _, pred = model(enc, mask)
-                loss = masked_mse_loss(pred, target, mask)
+                if use_amp:
+                    with torch.amp.autocast("cuda"):
+                        _, pred = model(enc, mask)
+                        loss = masked_mse_loss(pred, target, mask)
+                else:
+                    _, pred = model(enc, mask)
+                    loss = masked_mse_loss(pred, target, mask)
                 val_loss += loss.item()
                 v_batches += 1
         val_loss /= max(v_batches, 1)

@@ -1,7 +1,8 @@
-# Chess programming & ML stack (torch installed separately with CUDA)
+# Chess programming & ML stack
 numpy>=1.24.0
 python-chess>=1.999
 h5py>=3.8.0
+torch>=2.0.0
 
 # Lichess DB pull script
 zstandard>=0.21.0
