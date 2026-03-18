@@ -160,10 +160,20 @@ def main() -> int:
         help="Output directory for train.h5, val.h5, test.h5 (default: same dir as PGN)",
     )
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for split and sampling")
+    parser.add_argument(
+        "--max-boards",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Stop after this many boards total (train+val+test). No limit if unset.",
+    )
     args = parser.parse_args()
 
     if not args.pgn.exists():
         print(f"Error: PGN file not found: {args.pgn}", file=sys.stderr)
+        return 1
+    if args.max_boards is not None and args.max_boards < 1:
+        print("Error: --max-boards must be >= 1", file=sys.stderr)
         return 1
 
     out_dir = args.output_dir or args.pgn.parent
@@ -260,6 +270,9 @@ def main() -> int:
             total_test += te
             pbar.update(1)
             pbar.set_postfix(train=total_train, val=total_val, test=total_test, refresh=False)
+
+            if args.max_boards is not None and (total_train + total_val + total_test) >= args.max_boards:
+                break
 
             # Flush when any buffer reaches batch size
             if len(train_boards) >= HDF5_FLUSH_BATCH_SIZE:
