@@ -3,6 +3,8 @@ numpy>=1.24.0
 python-chess>=1.999
 h5py>=3.8.0
 torch>=2.0.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
 
 # Lichess DB pull script
 zstandard>=0.21.0

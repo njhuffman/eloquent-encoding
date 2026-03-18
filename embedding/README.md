@@ -27,6 +27,24 @@ Self-supervised chess board embedding using a **Masked AutoEncoder (MAE)**: enco
    Optional: `--batch-size`, `--epochs`, `--lr`, `--checkpoint-dir`, `--workers`.  
    Best model (by validation loss) is saved as `checkpoints/best.pt` (or the dir you pass).
 
+3. **Linear probes (validate embedding)**  
+   After training, run probes on the same train/val/test splits using only a **small subset** of the data (default 10%):
+
+   ```bash
+   python -m embedding.scripts.run_probes --train-h5 path/to/train.h5 --val-h5 path/to/val.h5 --test-h5 path/to/test.h5
+   ```
+
+   Probes: **piece count** (Ridge regression for white and black), **in_check** (logistic regression), **elo regression** (mean of white/black Elo), **elo top vs bottom** (logistic: top N% vs bottom N% by mean Elo). Use `--subset-ratio` (default 0.1) and `--elo-quantile` (default 0.25 for top/bottom 25%). Checkpoint defaults to `checkpoints/best.pt`.
+
+4. **Full pipeline (train + probes + report)**  
+   Single script that trains the MAE, runs probes, and writes a report:
+
+   ```bash
+   python -m embedding.run_full_pipeline --train-h5 path/to/train.h5 --val-h5 path/to/val.h5 --test-h5 path/to/test.h5 --report embedding_report.md
+   ```
+
+   The report includes: MAE training and validation loss per epoch, final MAE test loss, and for each probe the train/val/test loss (MSE for regression probes, log loss for classification). Optional: `--epochs`, `--batch-size`, `--subset-ratio`, `--checkpoint-dir`, etc.
+
 ## HDF5 schema
 
 Each split file (`train.h5`, `val.h5`, `test.h5`) contains:
@@ -55,7 +73,7 @@ All tunable constants (split ratios, skip probs, mask range, embedding dim, batc
 
 ## Dependencies
 
-- **Already in repo** `requirements.txt`: `numpy`, `python-chess`, `h5py`, `tqdm`, `torch`.
+- **Already in repo** `requirements.txt`: `numpy`, `python-chess`, `h5py`, `tqdm`, `torch`, `scikit-learn`.
 - **GPU**: Training uses CUDA automatically when available (faster). For a GPU build of PyTorch with CUDA, install from [pytorch.org](https://pytorch.org) (e.g. `pip install torch --index-url https://download.pytorch.org/whl/cu121` for CUDA 12.1). On GPU, mixed-precision (AMP) is enabled by default; use `--no-amp` to disable. Use `--device cuda:0` to pick a specific GPU. To sanity-check GPU training, run `python -m embedding.scripts.test_train_gpu` (runs a few steps on GPU if available, else CPU).
 
 ## File layout
@@ -66,3 +84,5 @@ All tunable constants (split ratios, skip probs, mask range, embedding dim, batc
 - `dataset.py` — PyTorch `ChessBoardDataset` (random 5–50% mask, zero + mask channel → 8×8×19).
 - `model.py` — CNN encoder (8×8×19 → 128-d) and decoder (→ 8×8×12); `masked_mse_loss`.
 - `train.py` — Training loop and best-model checkpointing.
+- `scripts/run_probes.py` — Linear probes (piece count, in_check, elo regression, elo top vs bottom) on a subset of train/val/test.
+- `run_full_pipeline.py` — End-to-end: train MAE, compute test loss, run probes, write report (training/val loss per epoch, final test loss, probe train/val/test loss).

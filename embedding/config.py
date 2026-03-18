@@ -47,3 +47,10 @@ DATALOADER_NUM_WORKERS = 4
 CHECKPOINT_DIR = "checkpoints"
 BEST_CHECKPOINT_NAME = "best.pt"
 LOG_INTERVAL = 100  # print loss every N batches
+
+# --- Linear probes (validate_embedding) ---
+# Use only this fraction of train/val/test for probe training and eval (small subset)
+PROBE_SUBSET_RATIO = 0.1
+# For elo top/bottom probe: use top N% vs bottom N% (e.g. 0.25 = 25%)
+ELO_QUANTILE = 0.25
+PROBE_RANDOM_SEED = 42
