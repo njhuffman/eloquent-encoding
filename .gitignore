@@ -17,6 +17,7 @@ databases/
 
 # Embedding: generated HDF5 splits and checkpoints
 embedding/data/
+embedding/artifacts/
 checkpoints/
 
 # IDE / editor

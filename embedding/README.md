@@ -18,14 +18,19 @@ Self-supervised chess board embedding using a **Masked AutoEncoder (MAE)**: enco
    - Progress is shown with tqdm. Use `--seed` to change the RNG seed.
 
 2. **Training**  
-   From the **repository root**:
+   All **model-affecting** settings (HDF5 paths, architecture, mask ratio range, batch size, LR, epochs, in-memory loading, log interval, AMP, registration, checkpoint layout) live in a **JSON spec** under [`embedding/model_configs/`](model_configs/) (see [`model_configs/README.md`](model_configs/README.md)). Copy `example.json`, set `"name"` and paths, then run from the **repository root**:
 
    ```bash
-   python -m embedding.train --train-h5 path/to/output_dir/train.h5 --val-h5 path/to/output_dir/val.h5
+   python -m embedding.train --model your-name
    ```
 
-   Optional: `--batch-size`, `--epochs`, `--lr`, `--checkpoint-dir`, `--workers`.  
-   Best model (by validation loss) is saved as `checkpoints/best.pt` (or the dir you pass).
+   Or: `python -m embedding.train --config path/to/spec.json` (the file must include `"name"`; with `--model name`, use `name.json` and matching `"name"`).
+
+   **CLI overrides** (optional): `--device`, `--workers`, `--checkpoint-dir`, `--artifacts-dir`, `--no-amp`, `--register` (forces registration even if `outputs.register` is false).
+
+   Best weights: `outputs.checkpoint_dir/best.pt` (default `checkpoints/<name>/best.pt`). Checkpoints store the full effective spec as `training_spec` (plus `runtime`), `architecture_id` / `architecture_config`, and `train_meta`.
+
+   **Registry**: set `"register": true` in the JSON or pass `--register`. Registered models use the spec `"name"`.
 
 3. **Linear probes (validate embedding)**  
    After training, run probes on the same train/val/test splits using only a **small subset** of the data (default 10%):
@@ -34,7 +39,13 @@ Self-supervised chess board embedding using a **Masked AutoEncoder (MAE)**: enco
    python -m embedding.scripts.run_probes --train-h5 path/to/train.h5 --val-h5 path/to/val.h5 --test-h5 path/to/test.h5
    ```
 
-   Probes: **piece count** (single-layer linear MLP, MSE), **in_check** (single-layer linear MLP, BCE), **elo regression** (linear MLP, MSE), **elo top vs bottom** (linear MLP, BCE; top N% vs bottom N% by mean Elo). Use `--subset-ratio` (default 0.1) and `--elo-quantile` (default 0.25). Checkpoint defaults to `checkpoints/best.pt`.
+   Probes: **piece count** (single-layer linear MLP, MSE), **in_check** (single-layer linear MLP, BCE), **elo regression** (linear MLP, MSE), **elo top vs bottom** (linear MLP, BCE; top N% vs bottom N% by mean Elo). Use `--subset-ratio` (default 0.1) and `--elo-quantile` (default 0.25). Checkpoint defaults to `checkpoints/best.pt`, or use **`--embedding-model <name>`** to load a registered artifact.
+
+   List registered models:
+
+   ```bash
+   python -m embedding.scripts.list_models
+   ```
 
 4. **Full pipeline (train + probes + report)**  
    Single script that trains the MAE, runs probes, and writes a report:
@@ -43,10 +54,18 @@ Self-supervised chess board embedding using a **Masked AutoEncoder (MAE)**: enco
    python -m embedding.run_full_pipeline --train-h5 path/to/train.h5 --val-h5 path/to/val.h5 --test-h5 path/to/test.h5 --report embedding_report.md
    ```
 
-   The report includes: MAE training and validation loss per epoch, final MAE test loss, and for each probe the train/val/test loss (MSE for regression probes, log loss for classification). Optional: `--epochs`, `--batch-size`, `--subset-ratio`, `--checkpoint-dir`, etc.
+   The report includes: MAE training and validation loss per epoch, final MAE test loss, and for each probe the train/val/test loss (MSE for regression probes, log loss for classification). Optional: `--epochs`, `--batch-size`, `--subset-ratio`, `--checkpoint-dir`, `--architecture`, `--arch-config`, **`--register`** / **`--model-name`** / **`--artifacts-dir`**, etc.
+
+## Using embeddings in other code
+
+- Load by registry name: `from embedding.load import load_mae_by_name` then `model = load_mae_by_name("swift-rook", device="cuda")`.
+- Load a `.pt` file: `from embedding.load import load_mae_from_checkpoint` then `model = load_mae_from_checkpoint(path, device="cuda")`.
+- Optional default name: set env **`ELOQUENCE_EMBEDDING`** to a registry name and use `load_mae_default_or_name()`.
+
+**Adding a new architecture family:** register a stable `architecture_id` and builder class in `embedding/architectures/__init__.py` (`ARCHITECTURE_BUILDERS`). The builder returns a module with `forward(encoder_input, mask) -> (embedding, piece_logits)` and an `.encoder` for full-board embedding extraction (same contract as `ChessMAE`).
 
 **Performance (GPU utilization)**  
-By default, train/val boards are **loaded into RAM once** before training (~4.6 GB per 1M samples), so the DataLoader does no file I/O and the GPU stays fed. If you hit out-of-memory, use `--no-in-memory` to load from HDF5 on each access (slower). For better GPU utilization use `--workers 2`; if you see a Bus error (out of shared memory), increase `/dev/shm` (e.g. Docker: `--shm-size=256m`). Optional: `--compile` uses `torch.compile(model)` for faster forward/backward (first epoch is slower due to compilation). Use `--profile` to print a profiler summary after the first epoch.
+With `training.in_memory: true` (default), train/val boards are **loaded into RAM once** before training (~4.6 GB per 1M samples). Set `in_memory` to `false` in the JSON if RAM is tight (slower). Use `--workers` on the CLI or `dataloader_num_workers` in the spec; if you see a Bus error, increase `/dev/shm` (e.g. Docker: `--shm-size=256m`). The standalone `run_full_pipeline` script still supports `--compile` / `--profile` and uses global mask defaults from `config.py`.
 
 ## HDF5 schema
 
@@ -67,12 +86,13 @@ Each split file (`train.h5`, `val.h5`, `test.h5`) contains:
 ## Model and masking
 
 - **Encoder input**: 8×8×19 = board with **masked positions zeroed** (18 ch) + **mask channel** (1 ch; 1 = masked, 0 = visible). So the model cannot see piece content at masked squares.
-- **Masking**: For each sample, a random fraction of squares in **[5%, 50%]** is chosen and those positions are zeroed in the board and marked in the mask channel.
+- **Masking**: For each sample, a random fraction of squares is chosen uniformly in **`masking.min_mask_ratio` … `masking.max_mask_ratio`** (defaults ~49–51% of squares; widen in the JSON for harder inpainting).
 - **Decoder**: Embedding (128-d) + mask (8×8×1) → 8×8×12 **piece planes only** (no turn, castling, or en passant). Loss (MSE) is applied **only on masked positions**.
 
 ## Config
 
-All tunable constants (split ratios, skip probs, mask range, embedding dim, batch size, LR, epochs, etc.) live in **`embedding/config.py`**. Edit that file to change behavior without digging through scripts.
+- **MAE training**: per-run JSON specs in **`embedding/model_configs/`**, merged with defaults in **`embedding/training_spec.py`** (aligned with **`embedding/config.py`**).
+- **PGN → HDF5 and global defaults** (split ratios, skip probs, default mask range, probe settings, etc.): **`embedding/config.py`**.
 
 ## Dependencies
 
@@ -92,12 +112,19 @@ This builds several encoder variants (different conv depth, channel widths, embe
 
 ## File layout
 
-- `config.py` — constants (split ratios, mask range, batch size, LR, etc.).
+- `config.py` — constants (split ratios, mask range, batch size, LR, artifacts dir, etc.).
 - `board_encoding.py` — `board_to_tensor()` (8×8×18), `get_piece_mask_8x8x12()`.
 - `scripts/pgn_to_hdf5.py` — PGN → HDF5 with train/val/test splits and batched writes.
 - `dataset.py` — PyTorch `ChessBoardDataset` (random 5–50% mask, zero + mask channel → 8×8×19).
-- `model.py` — CNN encoder (8×8×19 → 128-d) and decoder (→ 8×8×12); `masked_mse_loss`.
-- `train.py` — Training loop and best-model checkpointing.
-- `scripts/run_probes.py` — Linear probes (piece count, in_check, elo regression, elo top vs bottom) on a subset of train/val/test.
+- `model.py` — Residual CNN MAE (`ChessMAE`); `masked_mse_loss`.
+- `architectures/` — Registered `architecture_id` → builder (e.g. `residual_chess_mae_v1`).
+- `checkpoint_utils.py` — Canonical checkpoint dict layout; strip `torch.compile` prefixes on save.
+- `registry.py` — `embedding/artifacts/registry.json`, name generation, `register_model`.
+- `load.py` — Load MAE from registry name or checkpoint path.
+- `training_spec.py` — Load/normalize JSON training specs.
+- `model_configs/` — Example and user training JSON files.
+- `train.py` — Training loop; `--model` / `--config` + runtime-only CLI flags.
+- `scripts/run_probes.py` — Linear probes; `--embedding-model` or `--checkpoint`.
+- `scripts/list_models.py` — Print registry table.
 - `run_full_pipeline.py` — End-to-end: train MAE, compute test loss, run probes, write report (training/val loss per epoch, final test loss, probe train/val/test loss).
 - `scripts/benchmark_encoder_onnx.py` — ONNX CPU benchmark for encoder architecture variants (batch 1, 5, 10).

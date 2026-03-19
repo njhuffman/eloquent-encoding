@@ -44,9 +44,17 @@ class ChessBoardDataset(Dataset):
     - target_piece: (8, 8, 12) float32 — piece planes for loss (only applied on masked positions).
     """
 
-    def __init__(self, h5_path: str | Path, seed: int | None = None):
+    def __init__(
+        self,
+        h5_path: str | Path,
+        seed: int | None = None,
+        min_mask_ratio: float | None = None,
+        max_mask_ratio: float | None = None,
+    ):
         self.h5_path = Path(h5_path)
         self._seed = seed
+        self._min_mask = MIN_MASK_RATIO if min_mask_ratio is None else min_mask_ratio
+        self._max_mask = MAX_MASK_RATIO if max_mask_ratio is None else max_mask_ratio
         with open(self.h5_path, "rb") as _:
             pass  # check readable
         import h5py
@@ -59,8 +67,7 @@ class ChessBoardDataset(Dataset):
     def _random_mask(self) -> tuple[np.ndarray, np.ndarray]:
         """Return (mask_8x8, indices_of_masked). mask_8x8 is 1.0 where masked, 0.0 visible."""
         n_squares = BOARD_HEIGHT * BOARD_WIDTH
-        # Random fraction in [MIN_MASK_RATIO, MAX_MASK_RATIO]
-        frac = random.uniform(MIN_MASK_RATIO, MAX_MASK_RATIO)
+        frac = random.uniform(self._min_mask, self._max_mask)
         n_masked = max(1, min(n_squares - 1, int(round(frac * n_squares))))
         indices = random.sample(range(n_squares), n_masked)
         mask_flat = np.zeros(n_squares, dtype=np.float32)
@@ -74,7 +81,7 @@ class ChessBoardDataset(Dataset):
             # Deterministic per-index for reproducibility in val/test
             rng = random.Random(self._seed + idx)
             n_squares = BOARD_HEIGHT * BOARD_WIDTH
-            frac = rng.uniform(MIN_MASK_RATIO, MAX_MASK_RATIO)
+            frac = rng.uniform(self._min_mask, self._max_mask)
             n_masked = max(1, min(n_squares - 1, int(round(frac * n_squares))))
             indices = set(rng.sample(range(n_squares), n_masked))
             mask_8x8 = np.zeros((BOARD_HEIGHT, BOARD_WIDTH), dtype=np.float32)
@@ -109,10 +116,18 @@ class ChessBoardDatasetInMemory(Dataset):
     No file I/O in __getitem__ — much faster when data fits in RAM.
     """
 
-    def __init__(self, boards: np.ndarray, seed: int | None = None):
+    def __init__(
+        self,
+        boards: np.ndarray,
+        seed: int | None = None,
+        min_mask_ratio: float | None = None,
+        max_mask_ratio: float | None = None,
+    ):
         assert boards.ndim == 4 and boards.shape[1:] == (BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS)
         self._boards = boards  # (N, 8, 8, 18) float32
         self._seed = seed
+        self._min_mask = MIN_MASK_RATIO if min_mask_ratio is None else min_mask_ratio
+        self._max_mask = MAX_MASK_RATIO if max_mask_ratio is None else max_mask_ratio
 
     def __len__(self) -> int:
         return len(self._boards)
@@ -121,7 +136,7 @@ class ChessBoardDatasetInMemory(Dataset):
         if self._seed is not None:
             rng = random.Random(self._seed + idx)
             n_squares = BOARD_HEIGHT * BOARD_WIDTH
-            frac = rng.uniform(MIN_MASK_RATIO, MAX_MASK_RATIO)
+            frac = rng.uniform(self._min_mask, self._max_mask)
             n_masked = max(1, min(n_squares - 1, int(round(frac * n_squares))))
             indices = set(rng.sample(range(n_squares), n_masked))
             mask_8x8 = np.zeros((BOARD_HEIGHT, BOARD_WIDTH), dtype=np.float32)
@@ -130,7 +145,7 @@ class ChessBoardDatasetInMemory(Dataset):
                 mask_8x8[r, c] = 1.0
         else:
             n_squares = BOARD_HEIGHT * BOARD_WIDTH
-            frac = random.uniform(MIN_MASK_RATIO, MAX_MASK_RATIO)
+            frac = random.uniform(self._min_mask, self._max_mask)
             n_masked = max(1, min(n_squares - 1, int(round(frac * n_squares))))
             indices = random.sample(range(n_squares), n_masked)
             mask_8x8 = np.zeros((BOARD_HEIGHT, BOARD_WIDTH), dtype=np.float32)
@@ -160,6 +175,8 @@ def get_dataloaders(
     num_workers: int = 0,
     val_seed: int = 0,
     in_memory: bool = True,
+    min_mask_ratio: float | None = None,
+    max_mask_ratio: float | None = None,
 ) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     """
     Build train and val DataLoaders. Train is shuffled; val uses fixed seed for masking.
@@ -177,13 +194,33 @@ def get_dataloaders(
         print("Loading val boards into RAM...", file=sys.stderr, end=" ", flush=True)
         val_boards = load_boards_into_memory(val_h5)
         print(f"{val_boards.nbytes / 1e9:.2f} GB", file=sys.stderr)
-        train_ds = ChessBoardDatasetInMemory(train_boards, seed=None)
-        val_ds = ChessBoardDatasetInMemory(val_boards, seed=val_seed)
+        train_ds = ChessBoardDatasetInMemory(
+            train_boards,
+            seed=None,
+            min_mask_ratio=min_mask_ratio,
+            max_mask_ratio=max_mask_ratio,
+        )
+        val_ds = ChessBoardDatasetInMemory(
+            val_boards,
+            seed=val_seed,
+            min_mask_ratio=min_mask_ratio,
+            max_mask_ratio=max_mask_ratio,
+        )
         if num_workers == 1:
             print("Tip: --workers 2 often improves GPU utilization; if you see Bus error, increase /dev/shm (e.g. docker: --shm-size=256m)", file=sys.stderr)
     else:
-        train_ds = ChessBoardDataset(train_h5, seed=None)
-        val_ds = ChessBoardDataset(val_h5, seed=val_seed)
+        train_ds = ChessBoardDataset(
+            train_h5,
+            seed=None,
+            min_mask_ratio=min_mask_ratio,
+            max_mask_ratio=max_mask_ratio,
+        )
+        val_ds = ChessBoardDataset(
+            val_h5,
+            seed=val_seed,
+            min_mask_ratio=min_mask_ratio,
+            max_mask_ratio=max_mask_ratio,
+        )
 
     loader_kw = dict(
         batch_size=batch_size,

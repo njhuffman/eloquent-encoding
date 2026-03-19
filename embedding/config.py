@@ -29,8 +29,8 @@ PIECE_PLANES = 12  # first 12 channels are piece positions (decoder target)
 
 # --- Training (masking and model) ---
 # Mask fraction per sample: sample uniformly in [MIN_MASK_RATIO, MAX_MASK_RATIO]
-MIN_MASK_RATIO = 0.50
-MAX_MASK_RATIO = 0.90
+MIN_MASK_RATIO = 0.49
+MAX_MASK_RATIO = 0.51
 
 EMBEDDING_DIM = 128
 
@@ -47,6 +47,14 @@ DATALOADER_NUM_WORKERS = 4
 CHECKPOINT_DIR = "checkpoints"
 BEST_CHECKPOINT_NAME = "best.pt"
 LOG_INTERVAL = 100  # print loss every N batches
+
+# Registered trained models (see embedding.registry, embedding.load)
+ARTIFACTS_DIR = "embedding/artifacts"
+REGISTRY_FILENAME = "registry.json"
+CHECKPOINT_BASENAME = "checkpoint.pt"
+
+# Training specs (JSON): see embedding/model_configs/ and embedding.training_spec
+MODEL_CONFIGS_DIR = "embedding/model_configs"
 
 # --- Linear probes (validate_embedding) ---
 # Use only this fraction of train/val/test for probe training and eval (small subset)

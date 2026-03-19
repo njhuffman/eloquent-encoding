@@ -27,7 +27,10 @@ from embedding.config import (
     PROBE_RANDOM_SEED,
     PROBE_SUBSET_RATIO,
 )
-from embedding.model import ChessMAE
+import torch.nn as nn
+
+from embedding.architectures import DEFAULT_ARCHITECTURE_ID, build_model
+from embedding.load import load_mae_by_name, load_mae_from_checkpoint
 from embedding.probes import (
     predict_classifier_proba,
     predict_regression,
@@ -50,7 +53,7 @@ def _encoder_input_from_board(board: np.ndarray) -> np.ndarray:
 
 
 def extract_embeddings(
-    model: ChessMAE,
+    model: nn.Module,
     h5_path: Path,
     indices: np.ndarray,
     device: torch.device,
@@ -93,6 +96,12 @@ def main() -> int:
     parser.add_argument("--train-h5", type=Path, required=True, help="Train HDF5")
     parser.add_argument("--val-h5", type=Path, required=True, help="Val HDF5")
     parser.add_argument("--test-h5", type=Path, required=True, help="Test HDF5")
+    parser.add_argument(
+        "--embedding-model",
+        type=str,
+        default=None,
+        help="Registered model name (embedding/artifacts registry); overrides --checkpoint",
+    )
     parser.add_argument("--checkpoint", type=Path, default=None, help="MAE checkpoint (default: checkpoints/best.pt)")
     parser.add_argument("--subset-ratio", type=float, default=PROBE_SUBSET_RATIO, help=f"Fraction of data to use (default {PROBE_SUBSET_RATIO})")
     parser.add_argument("--elo-quantile", type=float, default=ELO_QUANTILE, help=f"Top/bottom N%% for elo binary probe (default {ELO_QUANTILE})")
@@ -105,16 +114,26 @@ def main() -> int:
             print(f"Error: not found: {p}", file=sys.stderr)
             return 1
 
-    ckpt = args.checkpoint or (_REPO_ROOT / "checkpoints" / "best.pt")
-    if not ckpt.exists():
-        print(f"Error: checkpoint not found: {ckpt}", file=sys.stderr)
-        return 1
-
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    state = torch.load(ckpt, map_location=device, weights_only=False)
-    model = ChessMAE()
-    model.load_state_dict(state["model_state_dict"], strict=True)
-    model = model.to(device)
+
+    if args.embedding_model:
+        try:
+            model = load_mae_by_name(args.embedding_model, repo_root=_REPO_ROOT, device=device)
+        except Exception as e:
+            print(f"Error loading registered model {args.embedding_model!r}: {e}", file=sys.stderr)
+            return 1
+    else:
+        ckpt = args.checkpoint or (_REPO_ROOT / "checkpoints" / "best.pt")
+        if not ckpt.exists():
+            print(f"Error: checkpoint not found: {ckpt}", file=sys.stderr)
+            return 1
+        state = torch.load(ckpt, map_location="cpu", weights_only=False)
+        if state.get("architecture_id"):
+            model = load_mae_from_checkpoint(ckpt, device=device)
+        else:
+            model = build_model(DEFAULT_ARCHITECTURE_ID, {})
+            model.load_state_dict(state["model_state_dict"], strict=True)
+            model = model.to(device)
     model.eval()
 
     def get_len(h5_path: Path) -> int:

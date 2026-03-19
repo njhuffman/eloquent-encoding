@@ -9,58 +9,85 @@ import torch.nn as nn
 from .config import BOARD_HEIGHT, BOARD_WIDTH, EMBEDDING_DIM, ENCODER_INPUT_CHANNELS, PIECE_PLANES
 
 
+class ResBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, channels, 3, padding=1),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels, channels, 3, padding=1),
+            nn.BatchNorm2d(channels),
+        )
+        self.relu = nn.ReLU(inplace=True)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.relu(self.conv(x) + x)
+
+
 class ChessMAE(nn.Module):
     """
     Masked autoencoder for chess boards.
-    - Encoder: (B, 19, 8, 8) -> (B, 128)
-    - Decoder: (B, 128) + (B, 1, 8, 8) -> (B, 12, 8, 8)
+    - Encoder: (B, 19, 8, 8) -> (B, embedding_dim)
+    - Decoder: (B, embedding_dim) + (B, 1, 8, 8) -> (B, 12, 8, 8)
+
+    Default hyperparameters match the original fixed architecture (two ResBlocks at stem width,
+    one at mid width, MLP head, three-stage decoder convs).
     """
 
-    def __init__(self, embedding_dim: int = EMBEDDING_DIM):
+    def __init__(
+        self,
+        embedding_dim: int = EMBEDDING_DIM,
+        stem_channels: int = 128,
+        num_res_blocks_low: int = 2,
+        mid_channels: int = 256,
+        num_res_blocks_high: int = 1,
+        mlp_hidden: int = 1024,
+        dropout: float = 0.2,
+        decoder_channels: tuple[int, ...] = (256, 128, 64),
+    ):
         super().__init__()
         self.embedding_dim = embedding_dim
-        # Encoder: 19 -> 64 -> 128 -> 256 -> 512 -> embedding_dim
-        self.encoder = nn.Sequential(
-            # Layer 1: Keep it wide from the start
-            nn.Conv2d(ENCODER_INPUT_CHANNELS, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
+        enc_layers: list[nn.Module] = [
+            nn.Conv2d(ENCODER_INPUT_CHANNELS, stem_channels, 3, padding=1),
+            nn.BatchNorm2d(stem_channels),
             nn.ReLU(inplace=True),
-            
-            # Layer 2: No stride! Keep 8x8
-            nn.Conv2d(128, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            
-            # Layer 3: Increase depth, still no stride
-            nn.Conv2d(128, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            
-            # Layer 4: Final spatial processing
-            nn.Conv2d(256, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            
-            nn.Flatten(),
-            # Now input is 256 * 8 * 8 = 16,384 (Massive signal compared to your current 1,024)
-            nn.Linear(256 * 8 * 8, 1024), 
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2), # Prevent overfitting on this big linear layer
-            nn.Linear(1024, embedding_dim),
+        ]
+        for _ in range(num_res_blocks_low):
+            enc_layers.append(ResBlock(stem_channels))
+        enc_layers.extend(
+            [
+                nn.Conv2d(stem_channels, mid_channels, 3, padding=1),
+                nn.BatchNorm2d(mid_channels),
+                nn.ReLU(inplace=True),
+            ]
         )
-        # Decoder: embedding (B, 128) broadcast to (B, 128, 8, 8), concat mask -> (B, 129, 8, 8) -> (B, 12, 8, 8)
-        self.decoder = nn.Sequential(
-            nn.Conv2d(embedding_dim + 1, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, PIECE_PLANES, 3, padding=1),
+        for _ in range(num_res_blocks_high):
+            enc_layers.append(ResBlock(mid_channels))
+        enc_layers.extend(
+            [
+                nn.Flatten(),
+                nn.Linear(mid_channels * BOARD_HEIGHT * BOARD_WIDTH, mlp_hidden),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+                nn.Linear(mlp_hidden, embedding_dim),
+            ]
         )
+        self.encoder = nn.Sequential(*enc_layers)
+
+        dec_layers: list[nn.Module] = []
+        in_ch = embedding_dim + 1
+        for out_ch in decoder_channels:
+            dec_layers.extend(
+                [
+                    nn.Conv2d(in_ch, out_ch, 3, padding=1),
+                    nn.BatchNorm2d(out_ch),
+                    nn.ReLU(inplace=True),
+                ]
+            )
+            in_ch = out_ch
+        dec_layers.append(nn.Conv2d(in_ch, PIECE_PLANES, 3, padding=1))
+        self.decoder = nn.Sequential(*dec_layers)
 
     def forward(
         self,
@@ -81,8 +108,8 @@ class ChessMAE(nn.Module):
         emb = self.encoder(encoder_input)  # (B, embedding_dim)
         # Broadcast embedding to spatial and concat mask
         B = emb.shape[0]
-        emb_spatial = emb.view(B, -1, 1, 1).expand(B, -1, BOARD_HEIGHT, BOARD_WIDTH)  # (B, 128, 8, 8)
-        dec_input = torch.cat([emb_spatial, mask], dim=1)  # (B, 129, 8, 8)
+        emb_spatial = emb.view(B, -1, 1, 1).expand(B, -1, BOARD_HEIGHT, BOARD_WIDTH)
+        dec_input = torch.cat([emb_spatial, mask], dim=1)  # (B, embedding_dim+1, 8, 8)
         out = self.decoder(dec_input)  # (B, 12, 8, 8)
         return emb, out
 

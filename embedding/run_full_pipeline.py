@@ -11,13 +11,16 @@ from pathlib import Path
 import h5py
 import numpy as np
 import torch
+import torch.nn as nn
 from sklearn.metrics import log_loss, mean_squared_error
 from torch.utils.data import DataLoader
 
+from .architectures import DEFAULT_ARCHITECTURE_ID, build_model, resolve_config_for_id
+from .checkpoint_utils import build_model_checkpoint
 from .config import (
+    ARTIFACTS_DIR,
     BATCH_SIZE,
     ELO_QUANTILE,
-    EMBEDDING_DIM,
     LEARNING_RATE,
     NUM_EPOCHS,
     DATALOADER_NUM_WORKERS,
@@ -29,7 +32,8 @@ from .config import (
     BOARD_WIDTH,
 )
 from .dataset import ChessBoardDataset, get_dataloaders
-from .model import ChessMAE, masked_mse_loss
+from .model import masked_mse_loss
+from .registry import generate_model_name, parse_arch_config_arg, register_model
 from .probes import (
     predict_classifier_proba,
     predict_regression,
@@ -81,14 +85,6 @@ class _CUDAPrefetcher:
         return out
 
 
-def _state_dict_for_module(state_dict: dict) -> dict:
-    """Strip _orig_mod. prefix from state_dict saved by torch.compile so it loads into a plain module."""
-    prefix = "_orig_mod."
-    if not any(k.startswith(prefix) for k in state_dict):
-        return state_dict
-    return {k.removeprefix(prefix): v for k, v in state_dict.items()}
-
-
 def _subsample_indices(n_total: int, ratio: float, seed: int) -> np.ndarray:
     n = max(1, int(round(ratio * n_total)))
     rng = np.random.default_rng(seed)
@@ -96,7 +92,7 @@ def _subsample_indices(n_total: int, ratio: float, seed: int) -> np.ndarray:
 
 
 def extract_embeddings(
-    model: ChessMAE,
+    model: nn.Module,
     h5_path: Path,
     indices: np.ndarray,
     device: torch.device,
@@ -280,6 +276,14 @@ def run_probes_on_embeddings(
     return results
 
 
+def _h5_board_counts(train_h5: Path, val_h5: Path) -> tuple[int, int]:
+    with h5py.File(train_h5, "r") as f:
+        n_train = f["board"].shape[0]
+    with h5py.File(val_h5, "r") as f:
+        n_val = f["board"].shape[0]
+    return n_train, n_val
+
+
 def run_mae_training(
     train_h5: Path,
     val_h5: Path,
@@ -293,8 +297,19 @@ def run_mae_training(
     in_memory: bool = True,
     use_compile: bool = False,
     profile: bool = False,
-) -> tuple[ChessMAE, list[float], list[float]]:
-    """Train MAE; return (best model, train_loss_per_epoch, val_loss_per_epoch). Saves best checkpoint to checkpoint_dir."""
+    architecture_id: str = DEFAULT_ARCHITECTURE_ID,
+    architecture_config: dict | None = None,
+) -> tuple[nn.Module, list[float], list[float], dict]:
+    """Train MAE; return (best model, train_losses, val_losses, info dict). Saves best checkpoint to checkpoint_dir."""
+    n_train, n_val = _h5_board_counts(train_h5, val_h5)
+    train_meta = {
+        "n_train_boards": int(n_train),
+        "n_val_boards": int(n_val),
+        "train_h5_basename": train_h5.name,
+        "val_h5_basename": val_h5.name,
+    }
+    resolved_architecture_config = resolve_config_for_id(architecture_id, architecture_config)
+
     train_loader, val_loader = get_dataloaders(
         train_h5,
         val_h5,
@@ -303,13 +318,14 @@ def run_mae_training(
         val_seed=0,
         in_memory=in_memory,
     )
-    model = ChessMAE().to(device)
+    model = build_model(architecture_id, architecture_config).to(device)
     if use_compile:
         model = torch.compile(model, mode="reduce-overhead")
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scaler = torch.amp.GradScaler("cuda") if use_amp else None
     best_val_loss = float("inf")
     best_state = None
+    best_epoch = 0
     train_losses = []
     val_losses = []
 
@@ -382,19 +398,39 @@ def run_mae_training(
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_epoch = epoch
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             if checkpoint_dir is not None:
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
-                torch.save(
-                    {"epoch": epoch, "model_state_dict": model.state_dict(), "val_loss": val_loss},
-                    checkpoint_dir / "best.pt",
+                payload = build_model_checkpoint(
+                    model,
+                    architecture_id=architecture_id,
+                    architecture_config=resolved_architecture_config,
+                    train_meta=train_meta,
+                    train_hparams={
+                        "batch_size": batch_size,
+                        "lr": lr,
+                        "epochs_requested": epochs,
+                        "epoch": epoch,
+                        "best_val_loss": val_loss,
+                    },
+                    epoch=epoch,
+                    val_loss=val_loss,
                 )
+                torch.save(payload, checkpoint_dir / "best.pt")
         print(f"Epoch {epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f}", file=sys.stderr)
 
     if best_state is not None:
         model.load_state_dict(best_state)
         model = model.to(device)
-    return model, train_losses, val_losses
+    info = {
+        "architecture_id": architecture_id,
+        "architecture_config": resolved_architecture_config,
+        "best_epoch": best_epoch,
+        "best_val_loss": best_val_loss if best_state is not None else float("nan"),
+        "train_meta": train_meta,
+    }
+    return model, train_losses, val_losses, info
 
 
 def compute_mae_baseline_loss(
@@ -449,7 +485,7 @@ def compute_mae_baseline_loss(
 
 
 def compute_mae_test_loss(
-    model: ChessMAE,
+    model: nn.Module,
     test_h5: Path,
     device: torch.device,
     batch_size: int = BATCH_SIZE,
@@ -486,7 +522,7 @@ def compute_mae_test_loss(
 
 
 def run_probes(
-    model: ChessMAE,
+    model: nn.Module,
     train_h5: Path,
     val_h5: Path,
     test_h5: Path,
@@ -686,6 +722,26 @@ def main() -> int:
     parser.add_argument("--elo-quantile", type=float, default=ELO_QUANTILE, help="Elo top/bottom quantile for binary probe")
     parser.add_argument("--seed", type=int, default=PROBE_RANDOM_SEED, help="Random seed for probes")
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints"), help="Where to save best MAE checkpoint")
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        default=DEFAULT_ARCHITECTURE_ID,
+        help=f"Registered architecture id (default {DEFAULT_ARCHITECTURE_ID})",
+    )
+    parser.add_argument(
+        "--arch-config",
+        type=str,
+        default=None,
+        help="Architecture params: path to JSON file or inline JSON object",
+    )
+    parser.add_argument("--register", action="store_true", help="Register best checkpoint in embedding artifacts registry")
+    parser.add_argument("--model-name", type=str, default=None, help="Registry name (default: auto-generated)")
+    parser.add_argument(
+        "--artifacts-dir",
+        type=str,
+        default=ARTIFACTS_DIR,
+        help=f"Registry root (default {ARTIFACTS_DIR})",
+    )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--no-amp", action="store_true", help="Disable mixed precision")
     parser.add_argument("--no-in-memory", action="store_true", help="Load from HDF5 on each access (slower, use if RAM is tight)")
@@ -707,8 +763,9 @@ def main() -> int:
         torch.backends.cudnn.benchmark = True
     print(f"Device: {device}, AMP: {use_amp}", file=sys.stderr)
 
+    arch_cfg_user = parse_arch_config_arg(args.arch_config)
     print("Training MAE...", file=sys.stderr)
-    model, train_losses, val_losses = run_mae_training(
+    model, train_losses, val_losses, train_info = run_mae_training(
         args.train_h5,
         args.val_h5,
         device,
@@ -721,6 +778,8 @@ def main() -> int:
         in_memory=not args.no_in_memory,
         use_compile=args.use_compile,
         profile=args.profile,
+        architecture_id=args.architecture,
+        architecture_config=arch_cfg_user,
     )
 
     print("Computing MAE test loss...", file=sys.stderr)
@@ -761,11 +820,12 @@ def main() -> int:
 
     print("Running probes (random embedding baseline)...", file=sys.stderr)
     rng = np.random.default_rng(args.seed)
-    X_train_re = rng.standard_normal((len(train_idx), EMBEDDING_DIM)).astype(np.float32)
+    emb_dim = int(getattr(model, "embedding_dim", train_info["architecture_config"].get("embedding_dim", 128)))
+    X_train_re = rng.standard_normal((len(train_idx), emb_dim)).astype(np.float32)
     rng_val = np.random.default_rng(args.seed + 1)
-    X_val_re = rng_val.standard_normal((len(val_idx), EMBEDDING_DIM)).astype(np.float32)
+    X_val_re = rng_val.standard_normal((len(val_idx), emb_dim)).astype(np.float32)
     rng_test = np.random.default_rng(args.seed + 2)
-    X_test_re = rng_test.standard_normal((len(test_idx), EMBEDDING_DIM)).astype(np.float32)
+    X_test_re = rng_test.standard_normal((len(test_idx), emb_dim)).astype(np.float32)
     _, meta_train = extract_embeddings(model, args.train_h5, train_idx, device)
     _, meta_val = extract_embeddings(model, args.val_h5, val_idx, device)
     _, meta_test = extract_embeddings(model, args.test_h5, test_idx, device)
@@ -775,7 +835,7 @@ def main() -> int:
     )
 
     print("Running probes (random-weights model baseline)...", file=sys.stderr)
-    model_random = ChessMAE().to(device)
+    model_random = build_model(train_info["architecture_id"], train_info["architecture_config"]).to(device)
     probe_results_random_model = run_probes(
         model_random,
         args.train_h5,
@@ -798,6 +858,26 @@ def main() -> int:
         seed=args.seed,
         elo_quantile=args.elo_quantile,
     )
+
+    if args.register:
+        repo_root = Path(__file__).resolve().parents[1]
+        ckpt_path = args.checkpoint_dir / "best.pt"
+        if not ckpt_path.is_file():
+            print(f"Error: --register set but no checkpoint at {ckpt_path}", file=sys.stderr)
+            return 1
+        state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        name = args.model_name or generate_model_name(repo_root=repo_root, artifacts_dir=args.artifacts_dir)
+        register_model(
+            name=name,
+            architecture_id=state["architecture_id"],
+            architecture_config=state["architecture_config"],
+            train_meta=state["train_meta"],
+            train_hparams=state["train_hparams"],
+            checkpoint_payload=state,
+            repo_root=repo_root,
+            artifacts_dir=args.artifacts_dir,
+        )
+        print(f"Registered model as {name!r}", file=sys.stderr)
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
     write_report(
