@@ -1,9 +1,14 @@
 """
 PyTorch Dataset for chess board HDF5: loads boards and applies random masking (5--50%)
 with zeroed masked positions and mask channel for encoder input (8x8x19).
+
+For fast training, use in_memory=True so boards are loaded into RAM once; __getitem__
+then only indexes and applies masking (no file I/O). This removes the main data-loading
+bottleneck that starves the GPU.
 """
 
 import random
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +25,15 @@ from .config import (
     MIN_MASK_RATIO,
     PIECE_PLANES,
 )
+
+
+def load_boards_into_memory(h5_path: str | Path) -> np.ndarray:
+    """Load full 'board' dataset from HDF5 into a contiguous float32 array. Use for in-memory training."""
+    import h5py
+    h5_path = Path(h5_path)
+    with h5py.File(h5_path, "r") as f:
+        boards = np.asarray(f["board"], dtype=np.float32)
+    return boards
 
 
 class ChessBoardDataset(Dataset):
@@ -89,30 +103,106 @@ class ChessBoardDataset(Dataset):
         )
 
 
+class ChessBoardDatasetInMemory(Dataset):
+    """
+    Same as ChessBoardDataset but uses a preloaded (N, 8, 8, 18) float32 array.
+    No file I/O in __getitem__ — much faster when data fits in RAM.
+    """
+
+    def __init__(self, boards: np.ndarray, seed: int | None = None):
+        assert boards.ndim == 4 and boards.shape[1:] == (BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS)
+        self._boards = boards  # (N, 8, 8, 18) float32
+        self._seed = seed
+
+    def __len__(self) -> int:
+        return len(self._boards)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._seed is not None:
+            rng = random.Random(self._seed + idx)
+            n_squares = BOARD_HEIGHT * BOARD_WIDTH
+            frac = rng.uniform(MIN_MASK_RATIO, MAX_MASK_RATIO)
+            n_masked = max(1, min(n_squares - 1, int(round(frac * n_squares))))
+            indices = set(rng.sample(range(n_squares), n_masked))
+            mask_8x8 = np.zeros((BOARD_HEIGHT, BOARD_WIDTH), dtype=np.float32)
+            for i in indices:
+                r, c = i // BOARD_WIDTH, i % BOARD_WIDTH
+                mask_8x8[r, c] = 1.0
+        else:
+            n_squares = BOARD_HEIGHT * BOARD_WIDTH
+            frac = random.uniform(MIN_MASK_RATIO, MAX_MASK_RATIO)
+            n_masked = max(1, min(n_squares - 1, int(round(frac * n_squares))))
+            indices = random.sample(range(n_squares), n_masked)
+            mask_8x8 = np.zeros((BOARD_HEIGHT, BOARD_WIDTH), dtype=np.float32)
+            for i in indices:
+                r, c = i // BOARD_WIDTH, i % BOARD_WIDTH
+                mask_8x8[r, c] = 1.0
+
+        board = self._boards[idx]  # (8, 8, 18) — view, no copy
+        board = np.asarray(board, dtype=np.float32)  # ensure contiguous for in-place later
+        masked_board = board.copy()
+        masked_board[mask_8x8 == 1.0, :] = 0.0
+        mask_channel = mask_8x8[:, :, np.newaxis]
+        encoder_input = np.concatenate([masked_board, mask_channel], axis=-1)
+        target_piece = get_piece_mask_8x8x12(board)
+
+        return (
+            torch.from_numpy(encoder_input),
+            torch.from_numpy(mask_channel),
+            torch.from_numpy(target_piece),
+        )
+
+
 def get_dataloaders(
     train_h5: str | Path,
     val_h5: str | Path,
     batch_size: int,
     num_workers: int = 0,
     val_seed: int = 0,
+    in_memory: bool = True,
 ) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
-    """Build train and val DataLoaders. Train is shuffled; val uses fixed seed for masking."""
+    """
+    Build train and val DataLoaders. Train is shuffled; val uses fixed seed for masking.
+
+    If in_memory=True (default), load full board arrays into RAM first so __getitem__ does
+    no file I/O — this removes the main bottleneck that starves the GPU. Requires enough
+    RAM for both splits (~4.6 GB per 1M samples).
+    """
     from torch.utils.data import DataLoader
-    train_ds = ChessBoardDataset(train_h5, seed=None)
-    val_ds = ChessBoardDataset(val_h5, seed=val_seed)
-    train_loader = DataLoader(
-        train_ds,
+
+    if in_memory:
+        print("Loading train boards into RAM...", file=sys.stderr, end=" ", flush=True)
+        train_boards = load_boards_into_memory(train_h5)
+        print(f"{train_boards.nbytes / 1e9:.2f} GB", file=sys.stderr)
+        print("Loading val boards into RAM...", file=sys.stderr, end=" ", flush=True)
+        val_boards = load_boards_into_memory(val_h5)
+        print(f"{val_boards.nbytes / 1e9:.2f} GB", file=sys.stderr)
+        train_ds = ChessBoardDatasetInMemory(train_boards, seed=None)
+        val_ds = ChessBoardDatasetInMemory(val_boards, seed=val_seed)
+        if num_workers == 1:
+            print("Tip: --workers 2 often improves GPU utilization; if you see Bus error, increase /dev/shm (e.g. docker: --shm-size=256m)", file=sys.stderr)
+    else:
+        train_ds = ChessBoardDataset(train_h5, seed=None)
+        val_ds = ChessBoardDataset(val_h5, seed=val_seed)
+
+    loader_kw = dict(
         batch_size=batch_size,
-        shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
+    )
+    if num_workers > 0:
+        # With in_memory, 1 worker can prefetch 2 batches without blowing /dev/shm; keeps GPU fed better.
+        loader_kw["prefetch_factor"] = 2 if (in_memory and num_workers == 1) else 1
+        loader_kw["persistent_workers"] = True
+    train_loader = DataLoader(
+        train_ds,
+        shuffle=True,
         drop_last=True,
+        **loader_kw,
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
+        **loader_kw,
     )
     return train_loader, val_loader

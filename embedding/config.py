@@ -29,8 +29,8 @@ PIECE_PLANES = 12  # first 12 channels are piece positions (decoder target)
 
 # --- Training (masking and model) ---
 # Mask fraction per sample: sample uniformly in [MIN_MASK_RATIO, MAX_MASK_RATIO]
-MIN_MASK_RATIO = 0.05
-MAX_MASK_RATIO = 0.50
+MIN_MASK_RATIO = 0.50
+MAX_MASK_RATIO = 0.90
 
 EMBEDDING_DIM = 128
 
@@ -54,3 +54,6 @@ PROBE_SUBSET_RATIO = 0.1
 # For elo top/bottom probe: use top N% vs bottom N% (e.g. 0.25 = 25%)
 ELO_QUANTILE = 0.25
 PROBE_RANDOM_SEED = 42
+# Single-layer linear MLP probe training
+PROBE_EPOCHS = 100
+PROBE_LR = 1e-2

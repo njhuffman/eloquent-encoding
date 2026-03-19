@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Linear probes to validate the chess embedding: piece count, in_check, elo (regression + top/bottom N%).
-Uses the same train/val/test HDF5 splits but only a small subset of the data (configurable).
+Uses single-layer linear MLPs (trained with MSE or BCE) on a subset of train/val/test.
 """
 
 import argparse
@@ -11,7 +11,6 @@ from pathlib import Path
 import h5py
 import numpy as np
 import torch
-from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import accuracy_score, mean_squared_error, r2_score, roc_auc_score
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -23,10 +22,18 @@ from embedding.config import (
     BOARD_HEIGHT,
     BOARD_WIDTH,
     ELO_QUANTILE,
+    PROBE_EPOCHS,
+    PROBE_LR,
     PROBE_RANDOM_SEED,
     PROBE_SUBSET_RATIO,
 )
 from embedding.model import ChessMAE
+from embedding.probes import (
+    predict_classifier_proba,
+    predict_regression,
+    train_classifier_probe,
+    train_regression_probe,
+)
 
 
 def _subsample_indices(n_total: int, ratio: float, seed: int) -> np.ndarray:
@@ -135,22 +142,26 @@ def main() -> int:
         y_train = meta_train[:, col]
         y_val = meta_val[:, col]
         y_test = meta_test[:, col]
-        reg = Ridge(alpha=1.0, random_state=args.seed).fit(X_train, y_train)
+        probe = train_regression_probe(
+            X_train, y_train, device, seed=args.seed, epochs=PROBE_EPOCHS, lr=PROBE_LR
+        )
         for split_name, X, y in [("val", X_val, y_val), ("test", X_test, y_test)]:
-            pred = reg.predict(X)
+            pred = predict_regression(probe, X, device)
             r2 = r2_score(y, pred)
             mse = mean_squared_error(y, pred)
             results.append((probe_name, split_name, {"r2": r2, "mse": mse}))
             print(f"Probe {probe_name} [{split_name}] R2={r2:.4f} MSE={mse:.4f}", file=sys.stderr)
 
     # --- 2. in_check (binary)
-    y_train = (meta_train[:, 5] >= 0.5).astype(int)
-    y_val = (meta_val[:, 5] >= 0.5).astype(int)
-    y_test = (meta_test[:, 5] >= 0.5).astype(int)
-    clf = LogisticRegression(max_iter=1000, random_state=args.seed).fit(X_train, y_train)
+    y_train = (meta_train[:, 5] >= 0.5).astype(np.int64)
+    y_val = (meta_val[:, 5] >= 0.5).astype(np.int64)
+    y_test = (meta_test[:, 5] >= 0.5).astype(np.int64)
+    probe = train_classifier_probe(
+        X_train, y_train, device, seed=args.seed, epochs=PROBE_EPOCHS, lr=PROBE_LR
+    )
     for split_name, X, y in [("val", X_val, y_val), ("test", X_test, y_test)]:
-        pred = clf.predict(X)
-        proba = clf.predict_proba(X)[:, 1] if hasattr(clf, "predict_proba") else pred
+        proba = predict_classifier_proba(probe, X, device)
+        pred = (proba >= 0.5).astype(int)
         acc = accuracy_score(y, pred)
         try:
             auc = roc_auc_score(y, proba)
@@ -163,9 +174,11 @@ def main() -> int:
     mean_elo_train = (meta_train[:, 0] + meta_train[:, 1]) / 2
     mean_elo_val = (meta_val[:, 0] + meta_val[:, 1]) / 2
     mean_elo_test = (meta_test[:, 0] + meta_test[:, 1]) / 2
-    reg = Ridge(alpha=1.0, random_state=args.seed).fit(X_train, mean_elo_train)
+    probe = train_regression_probe(
+        X_train, mean_elo_train, device, seed=args.seed, epochs=PROBE_EPOCHS, lr=PROBE_LR
+    )
     for split_name, X, y in [("val", X_val, mean_elo_val), ("test", X_test, mean_elo_test)]:
-        pred = reg.predict(X)
+        pred = predict_regression(probe, X, device)
         r2 = r2_score(y, pred)
         mse = mean_squared_error(y, pred)
         results.append(("elo_regression", split_name, {"r2": r2, "mse": mse}))
@@ -176,17 +189,18 @@ def main() -> int:
     q_hi = 1.0 - args.elo_quantile
     thresh_lo = np.quantile(mean_elo_train, q_lo)
     thresh_hi = np.quantile(mean_elo_train, q_hi)
-    # Labels: 1 = top (high elo), 0 = bottom (low elo). Use only top/bottom for training.
     train_mask = (mean_elo_train <= thresh_lo) | (mean_elo_train >= thresh_hi)
-    y_train_bin = (mean_elo_train >= thresh_hi).astype(int)
+    y_train_bin = (mean_elo_train >= thresh_hi).astype(np.int64)
     X_train_bin = X_train[train_mask]
     y_train_bin = y_train_bin[train_mask]
-    y_val_bin = (mean_elo_val >= thresh_hi).astype(int)
-    y_test_bin = (mean_elo_test >= thresh_hi).astype(int)
-    clf = LogisticRegression(max_iter=1000, random_state=args.seed).fit(X_train_bin, y_train_bin)
+    y_val_bin = (mean_elo_val >= thresh_hi).astype(np.int64)
+    y_test_bin = (mean_elo_test >= thresh_hi).astype(np.int64)
+    probe = train_classifier_probe(
+        X_train_bin, y_train_bin, device, seed=args.seed, epochs=PROBE_EPOCHS, lr=PROBE_LR
+    )
     for split_name, X, y in [("val", X_val, y_val_bin), ("test", X_test, y_test_bin)]:
-        pred = clf.predict(X)
-        proba = clf.predict_proba(X)[:, 1]
+        proba = predict_classifier_proba(probe, X, device)
+        pred = (proba >= 0.5).astype(int)
         acc = accuracy_score(y, pred)
         try:
             auc = roc_auc_score(y, proba)

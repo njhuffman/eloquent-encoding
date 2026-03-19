@@ -21,22 +21,32 @@ class ChessMAE(nn.Module):
         self.embedding_dim = embedding_dim
         # Encoder: 19 -> 64 -> 128 -> 256 -> 512 -> embedding_dim
         self.encoder = nn.Sequential(
-            nn.Conv2d(ENCODER_INPUT_CHANNELS, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1),
+            # Layer 1: Keep it wide from the start
+            nn.Conv2d(ENCODER_INPUT_CHANNELS, 128, 3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, 3, stride=2, padding=1),
+            
+            # Layer 2: No stride! Keep 8x8
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            
+            # Layer 3: Increase depth, still no stride
+            nn.Conv2d(128, 256, 3, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Flatten(),
-            nn.Linear(256 * 2 * 2, 512),
+            
+            # Layer 4: Final spatial processing
+            nn.Conv2d(256, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Linear(512, embedding_dim),
+            
+            nn.Flatten(),
+            # Now input is 256 * 8 * 8 = 16,384 (Massive signal compared to your current 1,024)
+            nn.Linear(256 * 8 * 8, 1024), 
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2), # Prevent overfitting on this big linear layer
+            nn.Linear(1024, embedding_dim),
         )
         # Decoder: embedding (B, 128) broadcast to (B, 128, 8, 8), concat mask -> (B, 129, 8, 8) -> (B, 12, 8, 8)
         self.decoder = nn.Sequential(

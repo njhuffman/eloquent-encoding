@@ -34,7 +34,7 @@ Self-supervised chess board embedding using a **Masked AutoEncoder (MAE)**: enco
    python -m embedding.scripts.run_probes --train-h5 path/to/train.h5 --val-h5 path/to/val.h5 --test-h5 path/to/test.h5
    ```
 
-   Probes: **piece count** (Ridge regression for white and black), **in_check** (logistic regression), **elo regression** (mean of white/black Elo), **elo top vs bottom** (logistic: top N% vs bottom N% by mean Elo). Use `--subset-ratio` (default 0.1) and `--elo-quantile` (default 0.25 for top/bottom 25%). Checkpoint defaults to `checkpoints/best.pt`.
+   Probes: **piece count** (single-layer linear MLP, MSE), **in_check** (single-layer linear MLP, BCE), **elo regression** (linear MLP, MSE), **elo top vs bottom** (linear MLP, BCE; top N% vs bottom N% by mean Elo). Use `--subset-ratio` (default 0.1) and `--elo-quantile` (default 0.25). Checkpoint defaults to `checkpoints/best.pt`.
 
 4. **Full pipeline (train + probes + report)**  
    Single script that trains the MAE, runs probes, and writes a report:
@@ -44,6 +44,9 @@ Self-supervised chess board embedding using a **Masked AutoEncoder (MAE)**: enco
    ```
 
    The report includes: MAE training and validation loss per epoch, final MAE test loss, and for each probe the train/val/test loss (MSE for regression probes, log loss for classification). Optional: `--epochs`, `--batch-size`, `--subset-ratio`, `--checkpoint-dir`, etc.
+
+**Performance (GPU utilization)**  
+By default, train/val boards are **loaded into RAM once** before training (~4.6 GB per 1M samples), so the DataLoader does no file I/O and the GPU stays fed. If you hit out-of-memory, use `--no-in-memory` to load from HDF5 on each access (slower). For better GPU utilization use `--workers 2`; if you see a Bus error (out of shared memory), increase `/dev/shm` (e.g. Docker: `--shm-size=256m`). Optional: `--compile` uses `torch.compile(model)` for faster forward/backward (first epoch is slower due to compilation). Use `--profile` to print a profiler summary after the first epoch.
 
 ## HDF5 schema
 
@@ -76,6 +79,17 @@ All tunable constants (split ratios, skip probs, mask range, embedding dim, batc
 - **Already in repo** `requirements.txt`: `numpy`, `python-chess`, `h5py`, `tqdm`, `torch`, `scikit-learn`.
 - **GPU**: Training uses CUDA automatically when available (faster). For a GPU build of PyTorch with CUDA, install from [pytorch.org](https://pytorch.org) (e.g. `pip install torch --index-url https://download.pytorch.org/whl/cu121` for CUDA 12.1). On GPU, mixed-precision (AMP) is enabled by default; use `--no-amp` to disable. Use `--device cuda:0` to pick a specific GPU. To sanity-check GPU training, run `python -m embedding.scripts.test_train_gpu` (runs a few steps on GPU if available, else CPU).
 
+## CPU inference benchmark (encoder architecture)
+
+To compare encoder architectures by **CPU inference time** (e.g. to pick a model for low-latency deployment), run:
+
+```bash
+pip install -r embedding/scripts/requirements-benchmark.txt
+python -m embedding.scripts.benchmark_encoder_onnx
+```
+
+This builds several encoder variants (different conv depth, channel widths, embedding dim, MLP size), exports each to ONNX with random weights, and reports mean inference time on CPU for batch sizes 1, 5, and 10. Edit the `architectures` list in the script to add or change variants.
+
 ## File layout
 
 - `config.py` — constants (split ratios, mask range, batch size, LR, etc.).
@@ -86,3 +100,4 @@ All tunable constants (split ratios, skip probs, mask range, embedding dim, batc
 - `train.py` — Training loop and best-model checkpointing.
 - `scripts/run_probes.py` — Linear probes (piece count, in_check, elo regression, elo top vs bottom) on a subset of train/val/test.
 - `run_full_pipeline.py` — End-to-end: train MAE, compute test loss, run probes, write report (training/val loss per epoch, final test loss, probe train/val/test loss).
+- `scripts/benchmark_encoder_onnx.py` — ONNX CPU benchmark for encoder architecture variants (batch 1, 5, 10).

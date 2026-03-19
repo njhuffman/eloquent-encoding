@@ -1,0 +1,3 @@
+# For embedding/scripts/benchmark_encoder_onnx.py (CPU inference benchmark)
+onnx>=1.14.0
+onnxruntime>=1.15.0
