@@ -1,0 +1,30 @@
+{
+  "name": "mayfly",
+  "data": {
+    "train_h5": "databases/1M/train.h5",
+    "val_h5": "databases/1M/val.h5"
+  },
+  "architecture": {
+    "id": "residual_chess_mae_v1",
+    "config": {}
+  },
+  "masking": {
+    "min_mask_ratio": 0.49,
+    "max_mask_ratio": 0.51
+  },
+  "training": {
+    "batch_size": 2048,
+    "epochs": 30,
+    "learning_rate": 0.001,
+    "val_seed": 0,
+    "in_memory": true,
+    "log_interval": 100,
+    "use_amp": true,
+    "dataloader_num_workers": 2
+  },
+  "outputs": {
+    "checkpoint_dir": null,
+    "register": false,
+    "artifacts_dir": null
+  }
+}
