@@ -1,0 +1,41 @@
+{
+  "name": "example",
+  "data": {
+    "train_h5": "databases/jepa/10k/train.h5",
+    "val_h5": "databases/jepa/10k/val.h5"
+  },
+  "architecture": {
+    "id": "chess_jepa_v1",
+    "config": {
+      "d_model": 256,
+      "encoder_layers": 4,
+      "predictor_layers": 2,
+      "nhead": 8,
+      "dim_feedforward": 1024,
+      "dropout": 0.1,
+      "use_cls": true,
+      "elo_scale": 3000.0,
+      "num_negatives_k": 8
+    }
+  },
+  "training": {
+    "batch_size": 256,
+    "epochs": 50,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.05,
+    "val_seed": 0,
+    "in_memory": false,
+    "log_interval": 100,
+    "use_amp": true,
+    "dataloader_num_workers": 4,
+    "ema_momentum": 0.999,
+    "triplet_margin_alpha": 0.2,
+    "vicreg_var_coef": 0.1,
+    "vicreg_std_target": 1.0
+  },
+  "outputs": {
+    "checkpoint_dir": null,
+    "register": false,
+    "artifacts_dir": null
+  }
+}
