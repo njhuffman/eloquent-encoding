@@ -1,0 +1,32 @@
+# Example recipe: each source is listed once with its own strata and take_games.
+# The build fails if any stratum does not reach take_games before that source stream ends.
+# Upper bound on HDF5 rows = sum over all strata of (take_games * samples_per_game);
+# actual rows can be slightly lower if some games have fewer legal candidate plies.
+#
+# `name` sets the output basename only; run with: --output-dir <dir> -> <dir>/{name}.h5
+
+name: validation_moves_100
+
+master_seed: 42
+time_control: null
+bucket_by: white
+skip_opening_plies: 6
+exclude_single_legal_move: true
+
+# Each `source` is a path relative to --data-dir (typically a .pgn.zst from
+#   python -m dataset_generation.download_month YYYY-MM --time-control 600+8 --output-dir …
+# which writes lichess_db_standard_rated_YYYY-MM_tc_600_8.pgn.zst
+# Unfiltered Lichess dumps also work if time_control below matches or is null.
+source_plans:
+  - source: lichess_db_standard_rated_2025-02_tc_600_0.pgn.zst
+    strata:
+      - elo_min: 1000
+        elo_max: 1099
+        take_games: 50
+        samples_per_game: 1
+        stratum_seed: 1001
+      - elo_min: 1100
+        elo_max: 1199
+        take_games: 50
+        samples_per_game: 2
+        stratum_seed: 1002
