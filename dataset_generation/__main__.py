@@ -48,11 +48,11 @@ def main() -> int:
         except Exception as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
-        ub = recipe.upper_bound_sample_rows()
+        target = recipe.target_sample_rows()
         with h5py.File(out, "r") as f:
             n = int(f["fen"].shape[0])
         print(out)
-        print(f"rows={n}  recipe_upper_bound_rows={ub}", file=sys.stderr)
+        print(f"rows={n}  recipe_target_rows={target}", file=sys.stderr)
         return 0
     return 1
 

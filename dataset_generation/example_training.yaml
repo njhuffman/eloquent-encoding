@@ -1,7 +1,7 @@
 # Example recipe: each source is listed once with its own strata and take_games.
 # The build fails if any stratum does not reach take_games before that source stream ends.
-# Upper bound on HDF5 rows = sum over all strata of (take_games * samples_per_game);
-# actual rows can be slightly lower if some games have fewer legal candidate plies.
+# HDF5 rows = sum over strata of (take_games * samples_per_game). A matching game is
+# skipped (not counted) if it has fewer than samples_per_game candidate positions.
 #
 # `name` sets the output basename only; run with: --output-dir <dir> -> <dir>/{name}.h5
 

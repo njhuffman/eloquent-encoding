@@ -38,17 +38,21 @@ class Recipe:
     exclude_single_legal_move: bool
     source_plans: tuple[SourcePlan, ...]
 
-    def upper_bound_sample_rows(self) -> int:
+    def target_sample_rows(self) -> int:
         """
-        Maximum HDF5 rows if every accepted game yields `samples_per_game` rows.
-        Actual row count may be lower when a game has fewer candidate plies than
-        `samples_per_game` (still counts as one accepted game toward take_games).
+        Total HDF5 rows on a successful build: sum of ``take_games * samples_per_game``
+        over all strata. Games with fewer than ``samples_per_game`` candidate positions
+        are skipped and do not count toward ``take_games``.
         """
         return sum(
             st.take_games * st.samples_per_game
             for plan in self.source_plans
             for st in plan.strata
         )
+
+    def upper_bound_sample_rows(self) -> int:
+        """Alias for :meth:`target_sample_rows` (same value when the build succeeds)."""
+        return self.target_sample_rows()
 
     def output_h5_path(self, output_dir: Path) -> Path:
         """Resolved path ``output_dir / f\"{name}.h5\"`` (directory need not exist yet)."""
@@ -80,12 +84,18 @@ class Recipe:
             for k in ("elo_min", "elo_max", "take_games", "samples_per_game", "stratum_seed"):
                 if k not in s:
                     raise KeyError(f"{where}[{i}] missing {k!r}")
+            tg = int(s["take_games"])
+            spg = int(s["samples_per_game"])
+            if tg < 0:
+                raise ValueError(f"{where}[{i}]: take_games must be >= 0, got {tg}")
+            if spg < 1:
+                raise ValueError(f"{where}[{i}]: samples_per_game must be >= 1, got {spg}")
             strata.append(
                 StratumSpec(
                     elo_min=int(s["elo_min"]),
                     elo_max=int(s["elo_max"]),
-                    take_games=int(s["take_games"]),
-                    samples_per_game=int(s["samples_per_game"]),
+                    take_games=tg,
+                    samples_per_game=spg,
                     stratum_seed=int(s["stratum_seed"]),
                 )
             )

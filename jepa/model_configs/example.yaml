@@ -1,0 +1,64 @@
+# Example staged JEPA config. Requires move-sample HDF5s from dataset_generation.
+# Use disjoint game sets in train vs val files so validation rows never appear in training.
+# hard_negatives.evaluate_legals_n (stage >= 2): score at most this many legal moves when
+# hard-mining; omit to score all legals. Must be > num_negatives_k when set.
+#   python -m jepa.train --model example --stage 0
+#   python -m jepa.train --model example --stage 1   # uses stages[0], loads example_stage_0.pt
+
+name: example
+checkpoint_dir: jepa_checkpoints/example
+train_move_dataset_h5: databases/training_moves_100.h5
+val_move_dataset_h5: databases/validation_moves_100.h5
+
+# Rows sampled from val_move_dataset_h5 only (independent of training file).
+val_sample:
+  n: 8
+  seed: 42
+
+defaults:
+  ema_momentum: 0.99
+  triplet_margin_alpha: 0.2
+  vicreg_var_coef: 0.1
+  vicreg_std_target: 1.0
+  batch_size: 8
+  dataloader_num_workers: 0
+  in_memory: true
+  log_interval: 5
+  use_amp: false
+
+architecture:
+  id: chess_jepa_v1
+  config:
+    d_model: 64
+    encoder_layers: 2
+    predictor_layers: 1
+    nhead: 4
+    dim_feedforward: 128
+    dropout: 0.0
+    use_cls: true
+    elo_scale: 3000.0
+    num_negatives_k: 4
+
+stages:
+  - sample:
+      n: 20
+      seed: 1
+    hard_negatives:
+      n_hard: 2
+      m_random: 2
+    train:
+      epochs: 1
+      learning_rate: 0.0001
+      weight_decay: 0.01
+
+  - sample:
+      n: 100
+      seed: 2
+    hard_negatives:
+      n_hard: 2
+      m_random: 2
+      evaluate_legals_n: 32
+    train:
+      epochs: 1
+      learning_rate: 0.00005
+      weight_decay: 0.01

@@ -245,19 +245,29 @@ def jepa_triplet_vicreg_loss(
 
         d_pos = 1.0 - sim_pos
         d_neg = 1.0 - sim_sel
-        triplet = F.relu(d_pos - d_neg + margin).mean()
+        triplet_i = F.relu(d_pos - d_neg + margin)
+        triplet = triplet_i.mean()
+
+        max_neg_sim = sim_negs.max(dim=1).values
+        pct_pos_beats_all_negs = (sim_pos > max_neg_sim).float().mean() * 100.0
+        pct_triplet_inactive = (d_pos - d_neg + margin <= 0).float().mean() * 100.0
 
         if z_online.shape[0] < 2:
             vic = z_online.new_zeros(())
+            vicreg_std_mean = z_online.new_zeros(())
         else:
             std = z_online.std(dim=0, unbiased=False)
             vic = F.relu(float(vicreg_std_target) - std).mean()
+            vicreg_std_mean = std.mean()
 
         loss = triplet + float(vicreg_var_coef) * vic
         metrics = {
             "triplet": float(triplet.detach()),
             "vicreg": float(vic.detach()),
             "loss": float(loss.detach()),
+            "pct_pos_beats_all_negs": float(pct_pos_beats_all_negs.detach()),
+            "pct_triplet_inactive": float(pct_triplet_inactive.detach()),
+            "vicreg_std_mean": float(vicreg_std_mean.detach()),
         }
     return loss, metrics
 

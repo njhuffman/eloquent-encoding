@@ -1,0 +1,94 @@
+name: jepa_x
+checkpoint_dir: jepa_checkpoints/jepa_x_1M
+train_move_dataset_h5: databases/moves/training_moves_1M.h5
+val_move_dataset_h5: databases/moves/validation_moves_1M.h5
+
+# Rows sampled from val_move_dataset_h5 only (independent of training file).
+val_sample:
+  n: 10000
+  seed: 42
+
+defaults:
+  ema_momentum: 0.99
+  triplet_margin_alpha: 0.2
+  vicreg_var_coef: 0.1
+  vicreg_std_target: 1.0
+  batch_size: 128
+  dataloader_num_workers: 4
+  in_memory: false
+  log_interval: 100
+  use_amp: true
+
+architecture:
+  id: chess_jepa_v1
+  config:
+    d_model: 256
+    encoder_layers: 4
+    predictor_layers: 2
+    nhead: 8
+    dim_feedforward: 1024
+    dropout: 0.0
+    use_cls: true
+    elo_scale: 3000.0
+    num_negatives_k: 4
+
+stages:
+  - sample:
+      n: 10000
+      seed: 1
+    hard_negatives:
+      n_hard: 2
+      m_random: 2
+    train:
+      epochs: 5
+      learning_rate: 0.0001
+      weight_decay: 0.01
+
+  - sample:
+      n: 10000
+      seed: 2
+    hard_negatives:
+      n_hard: 2
+      m_random: 2
+      evaluate_legals_n: 32
+    train:
+      epochs: 5
+      learning_rate: 0.00005
+      weight_decay: 0.01
+
+  - sample:
+      n: 100000
+      seed: 3
+    hard_negatives:
+      n_hard: 2
+      m_random: 2
+      evaluate_legals_n: 32
+    train:
+      epochs: 5
+      learning_rate: 0.00005
+      weight_decay: 0.01
+
+  - sample:
+      n: 100000
+      seed: 4
+    hard_negatives:
+      n_hard: 2
+      m_random: 2
+      evaluate_legals_n: 16
+    train:
+      epochs: 50
+      # 0.0005 was bad, 0.00005 was ok
+      learning_rate: 0.00005
+      weight_decay: 0.01
+
+  - sample:
+      n: 100000
+      seed: 5
+    hard_negatives:
+      n_hard: 2
+      m_random: 2
+      evaluate_legals_n: 16
+    train:
+      epochs: 50
+      learning_rate: 0.00005
+      weight_decay: 0.01

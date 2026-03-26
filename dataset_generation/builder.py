@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import io
+import logging
 import sys
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 import chess
 import chess.pgn
+import h5py
 import numpy as np
 from tqdm import tqdm
 
@@ -105,10 +109,8 @@ def _sample_indices(
     k: int,
     samples_per_game: int,
 ) -> np.ndarray:
-    if k == 0:
-        return np.array([], dtype=np.int64)
-    take = min(samples_per_game, k)
-    idx = rng.choice(k, size=take, replace=False)
+    """Requires ``k >= samples_per_game`` (caller ensures after filtering short games)."""
+    idx = rng.choice(k, size=samples_per_game, replace=False)
     return np.sort(idx)
 
 
@@ -123,6 +125,11 @@ def _write_samples_for_stratum(
     g: int,
 ) -> None:
     k = len(candidates)
+    if k < stratum.samples_per_game:
+        raise RuntimeError(
+            "internal error: _write_samples_for_stratum requires "
+            f"len(candidates) >= samples_per_game ({k} < {stratum.samples_per_game})"
+        )
     rng = _rng_for_game(master_seed, source_plan_index, stratum, stratum_index, g)
     for j in _sample_indices(rng, k, stratum.samples_per_game):
         fen, stm, elo, move = candidates[j]
@@ -155,6 +162,7 @@ def _ensure_strata_quotas_met(plan: SourcePlan, accepted: list[int]) -> None:
             f"source {plan.source!r} ended before quotas were met:\n  - "
             + "\n  - ".join(short)
         )
+        logger.error(msg)
         raise RuntimeError(msg)
 
 
@@ -166,8 +174,9 @@ def _process_one_source_plan(
     plan: SourcePlan,
     data_dir: Path,
 ) -> list[int]:
-    """Stream `plan.source` once; fill that plan's strata in parallel. Raises if EOF
-    arrives before every stratum reaches `take_games`."""
+    """Stream `plan.source` once; fill that plan's strata in parallel. Only games with
+    at least ``samples_per_game`` candidate positions count toward each stratum's
+    ``take_games``. Raises if EOF arrives before every quota is met."""
     strata = plan.strata
     accepted = [0] * len(strata)
     path = resolve_source_file(data_dir, plan.source)
@@ -201,6 +210,8 @@ def _process_one_source_plan(
                 if accepted[s] >= st.take_games:
                     continue
                 if not _game_matches_stratum(white, black, recipe.bucket_by, st.elo_min, st.elo_max):
+                    continue
+                if len(candidates) < st.samples_per_game:
                     continue
                 g = accepted[s]
                 accepted[s] += 1
@@ -244,8 +255,20 @@ def build_from_recipe(
                     plan=plan,
                     data_dir=data_dir,
                 )
-    except Exception:
+    except Exception as e:
         if out_path.exists():
             out_path.unlink(missing_ok=True)
+            logger.error("Build failed; removed partial output %s: %s", out_path, e)
+        else:
+            logger.error("Build failed (no output file written): %s", e)
         raise
+
+    expected = recipe.target_sample_rows()
+    with h5py.File(out_path, "r") as f:
+        n = int(f["fen"].shape[0])
+    if n != expected:
+        out_path.unlink(missing_ok=True)
+        msg = f"HDF5 row count {n} != recipe target {expected}; removed output"
+        logger.error(msg)
+        raise RuntimeError(msg)
     return out_path
