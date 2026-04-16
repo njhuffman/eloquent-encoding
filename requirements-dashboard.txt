@@ -1,0 +1,5 @@
+# Optional: JEPA training dashboard (FastAPI + uvicorn).
+# Install with: pip install -r requirements-dashboard.txt
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.0.0

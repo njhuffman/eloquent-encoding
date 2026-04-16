@@ -34,6 +34,14 @@ DEFAULTS: dict[str, Any] = {
     "use_amp": True,
 }
 
+DASHBOARD_METRICS_DEFAULTS: dict[str, Any] = {
+    "move_benchmark_sample_n": 2048,
+    "move_benchmark_seed": 42,
+    "move_benchmark_train_seed": 1000045,
+    "move_benchmark_succ_chunk": 256,
+    "device": "auto",
+}
+
 
 def load_model_spec(path: Path) -> dict[str, Any]:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -86,6 +94,15 @@ def load_model_spec(path: Path) -> dict[str, Any]:
     merged_defaults = _deep_merge(DEFAULTS, raw.get("defaults") or {})
     raw["defaults"] = merged_defaults
 
+    dm = _deep_merge(dict(DASHBOARD_METRICS_DEFAULTS), raw.get("dashboard_metrics") or {})
+    dm["move_benchmark_sample_n"] = int(dm["move_benchmark_sample_n"])
+    dm["move_benchmark_seed"] = int(dm["move_benchmark_seed"])
+    dm["move_benchmark_train_seed"] = int(dm["move_benchmark_train_seed"])
+    dm["move_benchmark_succ_chunk"] = int(dm["move_benchmark_succ_chunk"])
+    if dm["device"] not in ("auto", "cuda", "cpu"):
+        raise ValueError('dashboard_metrics.device must be "auto", "cuda", or "cpu"')
+    raw["dashboard_metrics"] = dm
+
     for i, st in enumerate(stages):
         if not isinstance(st, dict):
             raise TypeError(f"stages[{i}] must be a mapping")
@@ -99,6 +116,13 @@ def load_model_spec(path: Path) -> dict[str, Any]:
             raise KeyError(f"stages[{i}].hard_negatives needs n_hard, m_random")
         hn["n_hard"] = int(hn["n_hard"])
         hn["m_random"] = int(hn["m_random"])
+        if hn["n_hard"] < 0 or hn["m_random"] < 0:
+            raise ValueError(f"stages[{i}].hard_negatives n_hard and m_random must be >= 0")
+        if hn["n_hard"] + hn["m_random"] < 1:
+            raise ValueError(
+                f"stages[{i}].hard_negatives n_hard + m_random must be >= 1 (got "
+                f"{hn['n_hard']}+{hn['m_random']})"
+            )
         if "evaluate_legals_n" in hn:
             ev = int(hn["evaluate_legals_n"])
             if ev < 2:

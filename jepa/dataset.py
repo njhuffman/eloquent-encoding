@@ -60,8 +60,8 @@ def assert_h5_k_matches(h5_path: str | Path, expected_k: int) -> None:
     k = _read_num_negatives_k(h5_path)
     if k != expected_k:
         raise ValueError(
-            f"{h5_path}: HDF5 has num_negatives_k={k} but architecture expects {expected_k}. "
-            "Regenerate data or change num_negatives_k in the training spec."
+            f"{h5_path}: HDF5 attrs num_negatives_k={k} but this stage expects K={expected_k} "
+            "(n_hard + m_random). Regenerate materialized data or match hard_negatives."
         )
 
 

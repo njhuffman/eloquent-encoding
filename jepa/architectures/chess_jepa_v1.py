@@ -5,6 +5,7 @@ Chess-JEPA v1: spatial-token encoder, EMA target twin, Elo-conditioned predictor
 from __future__ import annotations
 
 import copy
+import warnings
 from contextlib import nullcontext
 from typing import Any
 
@@ -25,12 +26,18 @@ DEFAULT_ARCHITECTURE_CONFIG: dict[str, Any] = {
     "dropout": 0.1,
     "use_cls": True,
     "elo_scale": 3000.0,
-    "num_negatives_k": 8,
 }
 
 
 def resolve_architecture_config(user: dict[str, Any] | None) -> dict[str, Any]:
     cfg = {**DEFAULT_ARCHITECTURE_CONFIG, **(user or {})}
+    if cfg.pop("num_negatives_k", None) is not None:
+        warnings.warn(
+            "architecture.config num_negatives_k is ignored; use stages[*].hard_negatives "
+            "n_hard + m_random as K.",
+            UserWarning,
+            stacklevel=2,
+        )
     cfg["d_model"] = int(cfg["d_model"])
     cfg["encoder_layers"] = int(cfg["encoder_layers"])
     cfg["predictor_layers"] = int(cfg["predictor_layers"])
@@ -39,14 +46,13 @@ def resolve_architecture_config(user: dict[str, Any] | None) -> dict[str, Any]:
     cfg["dropout"] = float(cfg["dropout"])
     cfg["use_cls"] = bool(cfg["use_cls"])
     cfg["elo_scale"] = float(cfg["elo_scale"])
-    cfg["num_negatives_k"] = int(cfg["num_negatives_k"])
     if cfg["d_model"] % cfg["nhead"] != 0:
         raise ValueError("d_model must be divisible by nhead")
     return cfg
 
 
 class BoardEncoder(nn.Module):
-    """64 square tokens (+ optional CLS), TransformerEncoder, L2-normalized latent."""
+    """64 square tokens (+ optional CLS), TransformerEncoder, raw d_model latent."""
 
     def __init__(
         self,
@@ -105,11 +111,11 @@ class BoardEncoder(nn.Module):
             out = x[:, 0, :]
         else:
             out = x.mean(dim=1)
-        return F.normalize(out, dim=-1, eps=1e-6)
+        return out
 
 
 class PredictorHead(nn.Module):
-    """Elo-conditioned 2-layer Transformer on a single token."""
+    """Elo-conditioned 2-layer Transformer on a single token; raw d_model output."""
 
     def __init__(
         self,
@@ -142,7 +148,7 @@ class PredictorHead(nn.Module):
         x = fused.unsqueeze(1)
         x = self.encoder(x)
         out = x.squeeze(1)
-        return F.normalize(out, dim=-1, eps=1e-6)
+        return out
 
 
 class ChessJEPA(nn.Module):
@@ -215,12 +221,15 @@ def jepa_triplet_vicreg_loss(
     vicreg_std_target: float,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """
-    z_* are L2-normalized. z_negs: (B, K, D).
-    Negative mining: among negs with sim_neg > sim_pos + margin_alpha, pick max sim_neg;
-    else pick min sim_neg (hardest). Loss: relu(d_pos - d_neg_sel + margin_alpha) with d = 1 - sim.
+    Squared L2 geometry. z_negs: (B, K, D).
+    d_pos = ||z_hat - z_pos||^2, d_neg_k = ||z_hat - z_neg_k||^2.
+    Mining: active negatives satisfy d_neg < d_pos + margin.
+    mean_n_neg_within_margin: batch mean count of negatives satisfying that inequality (per row, among K).
+    Selection: easiest active (largest active d_neg); if none active, choose hardest inactive
+    (smallest d_neg overall), yielding zero triplet term and only VICReg contribution.
+    Loss: mean relu(d_pos - d_neg_sel + margin). VICReg variance on z_online unchanged.
     """
-    # Under CUDA autocast, matmul/bmm downcasts float32 -> float16, which breaks mask sentinels
-    # (e.g. -1e9 in fp16). Force this block to run with autocast off.
+    # Under CUDA autocast, fp16 can break large sentinels; keep this block in full precision.
     amp_off = torch.amp.autocast("cuda", enabled=False) if z_hat.is_cuda else nullcontext()
     with amp_off:
         z_online = z_online.float()
@@ -228,29 +237,28 @@ def jepa_triplet_vicreg_loss(
         z_pos = z_pos.float()
         z_negs = z_negs.float()
 
-        sim_pos = (z_hat * z_pos).sum(dim=-1).clamp(-1.0, 1.0)
-        sim_negs = torch.bmm(z_negs, z_hat.unsqueeze(-1)).squeeze(-1).clamp(-1.0, 1.0)
+        d_pos = (z_hat - z_pos).pow(2).sum(dim=-1)
+        d_negs = (z_negs - z_hat.unsqueeze(1)).pow(2).sum(dim=-1)
 
         margin = float(margin_alpha)
-        sp = sim_pos.unsqueeze(-1)
-        valid = sim_negs > (sp + margin)
-        neg_inf = torch.full_like(sim_negs, -1e9)
-        masked_max = torch.where(valid, sim_negs, neg_inf)
-        has_valid = valid.any(dim=-1)
-        idx_easy = masked_max.argmax(dim=-1)
-        idx_hard = sim_negs.argmin(dim=-1)
-        idx = torch.where(has_valid, idx_easy, idx_hard)
+        sp = d_pos.unsqueeze(-1)
+        active = d_negs < (sp + margin)
+        neg_inf = torch.full_like(d_negs, float("-inf"))
+        masked_active = torch.where(active, d_negs, neg_inf)
+        has_active = active.any(dim=-1)
+        idx_easiest_active = masked_active.argmax(dim=-1)
+        idx_hardest_inactive = d_negs.argmin(dim=-1)
+        idx = torch.where(has_active, idx_easiest_active, idx_hardest_inactive)
         b_idx = torch.arange(z_hat.shape[0], device=z_hat.device, dtype=torch.long)
-        sim_sel = sim_negs[b_idx, idx]
+        d_neg_sel = d_negs[b_idx, idx]
 
-        d_pos = 1.0 - sim_pos
-        d_neg = 1.0 - sim_sel
-        triplet_i = F.relu(d_pos - d_neg + margin)
+        triplet_i = F.relu(d_pos - d_neg_sel + margin)
         triplet = triplet_i.mean()
 
-        max_neg_sim = sim_negs.max(dim=1).values
-        pct_pos_beats_all_negs = (sim_pos > max_neg_sim).float().mean() * 100.0
-        pct_triplet_inactive = (d_pos - d_neg + margin <= 0).float().mean() * 100.0
+        pct_active = has_active.float().mean() * 100.0
+        mean_n_neg_within_margin = active.float().sum(dim=-1).mean()
+        max_d_negs = d_negs.max(dim=1).values
+        pct_pos_beats_hardest_neg = (d_pos < max_d_negs).float().mean() * 100.0
 
         if z_online.shape[0] < 2:
             vic = z_online.new_zeros(())
@@ -265,8 +273,9 @@ def jepa_triplet_vicreg_loss(
             "triplet": float(triplet.detach()),
             "vicreg": float(vic.detach()),
             "loss": float(loss.detach()),
-            "pct_pos_beats_all_negs": float(pct_pos_beats_all_negs.detach()),
-            "pct_triplet_inactive": float(pct_triplet_inactive.detach()),
+            "pct_active": float(pct_active.detach()),
+            "mean_n_neg_within_margin": float(mean_n_neg_within_margin.detach()),
+            "pct_pos_beats_hardest_neg": float(pct_pos_beats_hardest_neg.detach()),
             "vicreg_std_mean": float(vicreg_std_mean.detach()),
         }
     return loss, metrics

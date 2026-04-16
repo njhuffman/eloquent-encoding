@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JEPA training dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3d8fd1;
+      --ok: #3dad6c;
+      --warn: #d4a534;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      line-height: 1.45;
+    }
+    header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid #2a3544;
+      background: var(--panel);
+    }
+    header h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+    header p { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.85rem; }
+    nav {
+      display: flex;
+      gap: 0.5rem;
+      padding: 0.75rem 1.25rem;
+      background: #141c28;
+      border-bottom: 1px solid #2a3544;
+    }
+    nav button {
+      background: transparent;
+      border: 1px solid #334155;
+      color: var(--text);
+      padding: 0.45rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    nav button:hover { border-color: var(--accent); color: var(--accent); }
+    nav button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    main { padding: 1.25rem; max-width: 1200px; margin: 0 auto; }
+    .panel {
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+      border: 1px solid #2a3544;
+    }
+    .hidden { display: none !important; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #2a3544; }
+    th { color: var(--muted); font-weight: 500; }
+    tr:hover td { background: rgba(61, 143, 209, 0.08); }
+    button.primary {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button.primary:disabled { opacity: 0.45; cursor: not-allowed; }
+    select, input[type="number"] {
+      background: #0f1419;
+      border: 1px solid #334155;
+      color: var(--text);
+      padding: 0.4rem 0.6rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+    select[multiple] {
+      min-width: 14rem;
+      min-height: 8rem;
+      padding: 0.35rem 0.5rem;
+      vertical-align: top;
+    }
+    .bench-charts {
+      display: grid;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    @media (min-width: 900px) {
+      .bench-charts { grid-template-columns: 1fr 1fr; }
+    }
+    /* Fixed-height plot area: Chart.js with maintainAspectRatio:false fills the parent; if the parent
+       height is content-driven (from the canvas), ResizeObserver + layout can loop and the page grows. */
+    .bench-metric {
+      position: relative;
+    }
+    .bench-metric h3 {
+      margin: 0 0 0.5rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .bench-chart-wrap {
+      position: relative;
+      height: 220px;
+      width: 100%;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    pre.log {
+      background: #0a0e14;
+      color: #b8c5d6;
+      padding: 0.75rem;
+      border-radius: 6px;
+      max-height: 320px;
+      overflow: auto;
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .gpu-strip {
+      font-family: ui-monospace, monospace;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+    }
+    .stage-pill { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 4px; font-size: 0.75rem; margin-right: 0.25rem; }
+    .stage-yes { background: rgba(61, 173, 108, 0.2); color: var(--ok); }
+    .stage-no { background: rgba(180, 83, 83, 0.15); color: #e07070; }
+    .err { color: #e07070; }
+    kbd {
+      font-family: ui-monospace, monospace;
+      font-size: 0.8em;
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+      border: 1px solid #334155;
+      background: #0f1419;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>JEPA training dashboard</h1>
+    <p>Models (saved CPU profile), move top-k on val vs train samples by stage, training curves (negatives in margin vs stage), optional live GPU benchmark, and training runner.</p>
+  </header>
+  <nav>
+    <button type="button" class="tab-btn active" data-tab="models">Models</button>
+    <button type="button" class="tab-btn" data-tab="benchmarks">Stage benchmarks</button>
+    <button type="button" class="tab-btn" data-tab="curves">Training curves</button>
+    <button type="button" class="tab-btn" data-tab="run">Run training</button>
+  </nav>
+  <main>
+    <section id="tab-models">
+      <div class="panel">
+        <p id="models-status" class="muted"></p>
+        <div style="overflow-x: auto;">
+          <table id="models-table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Architecture</th>
+                <th>Params</th>
+                <th>CPU 1× (s)</th>
+                <th>Stages</th>
+                <th>Checkpoint dir</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel hidden" id="model-detail-panel">
+        <h2 style="margin-top:0;font-size:1rem;" id="detail-title"></h2>
+        <p><strong>Parameters:</strong> <span id="detail-params"></span></p>
+        <p><strong>CPU single forward (saved):</strong> <span id="detail-cpu">—</span></p>
+        <p id="detail-next"></p>
+        <p>
+          <button type="button" class="primary" id="btn-benchmark">Run forward benchmark</button>
+          <label style="margin-left:1rem;">Batch <input type="number" id="bench-batch" value="8" min="1" max="512" style="width:4rem;" /></label>
+        </p>
+        <pre class="log hidden" id="bench-output"></pre>
+      </div>
+    </section>
+
+    <section id="tab-benchmarks" class="hidden">
+      <div class="panel">
+        <label>
+          Models
+          <select id="bench-model" multiple aria-label="Models for benchmark charts"></select>
+        </label>
+        <button type="button" class="primary" id="btn-load-bench" style="margin-left:1rem;vertical-align:top;">Load</button>
+        <p id="bench-hint" style="color:var(--muted);font-size:0.85rem;margin-top:0.75rem;">
+          Hold <kbd>Ctrl</kbd> or <kbd>⌘</kbd> and click to select multiple models. Each metric is its own chart. Solid lines = validation sample; dashed = training sample (same color per model) when metrics include both.
+        </p>
+        <div class="bench-charts">
+          <div class="panel bench-metric" style="margin:0;">
+            <h3>Move top-1 % (val vs train)</h3>
+            <div class="bench-chart-wrap"><canvas id="bench-chart-top1"></canvas></div>
+          </div>
+          <div class="panel bench-metric" style="margin:0;">
+            <h3>Move top-2 % (val vs train)</h3>
+            <div class="bench-chart-wrap"><canvas id="bench-chart-top2"></canvas></div>
+          </div>
+          <div class="panel bench-metric" style="margin:0;">
+            <h3>Move top-5 % (val vs train)</h3>
+            <div class="bench-chart-wrap"><canvas id="bench-chart-top5"></canvas></div>
+          </div>
+          <div class="panel bench-metric" style="margin:0;">
+            <h3>Move top-10 % (val vs train)</h3>
+            <div class="bench-chart-wrap"><canvas id="bench-chart-top10"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-curves" class="hidden">
+      <div class="panel">
+        <label>
+          Models
+          <select id="curves-models" multiple aria-label="Models for training curves"></select>
+        </label>
+        <button type="button" class="primary" id="btn-load-curves" style="margin-left:1rem;vertical-align:top;">Load</button>
+        <p id="curves-hint" style="color:var(--muted);font-size:0.85rem;margin-top:0.75rem;">
+          Hold <kbd>Ctrl</kbd> or <kbd>⌘</kbd> and click to select multiple models. X-axis is <strong>training stage</strong> (S1…); each point uses the <strong>last epoch</strong> of that stage&apos;s JSONL. Solid = val, dashed = train, same color per model. Metric: mean count of sampled negatives with <code>d_neg &lt; d_pos + margin</code>.
+        </p>
+        <div class="panel bench-metric" style="margin-top:1rem;margin-bottom:0;">
+          <h3>Mean negatives within margin (by stage)</h3>
+          <div class="bench-chart-wrap"><canvas id="curves-chart-margin"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-run" class="hidden">
+      <div class="panel">
+        <label>Model <select id="run-model"></select></label>
+        <label style="margin-left:1rem;"><input type="checkbox" id="run-remat" /> Rematerialize</label>
+        <button type="button" class="primary" id="btn-start-run" style="margin-left:1rem;">Start next missing stage</button>
+        <p id="run-status"></p>
+        <div class="gpu-strip" id="gpu-strip"></div>
+        <pre class="log" id="run-log"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    document.querySelectorAll(".tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        ["models", "benchmarks", "curves", "run"].forEach((t) => {
+          $("tab-" + t).classList.toggle("hidden", btn.dataset.tab !== t);
+        });
+      });
+    });
+
+    const BENCH_METRICS = [
+      { key: "top1_pct", canvas: "bench-chart-top1" },
+      { key: "top2_pct", canvas: "bench-chart-top2" },
+      { key: "top5_pct", canvas: "bench-chart-top5" },
+      { key: "top10_pct", canvas: "bench-chart-top10" },
+    ];
+    const MODEL_LINE_COLORS = [
+      "#6eb5e0",
+      "#7dd3a8",
+      "#d4a534",
+      "#c084fc",
+      "#f472b6",
+      "#94a3b8",
+      "#fb923c",
+      "#e07070",
+    ];
+    let benchCharts = [];
+    let curvesChart = null;
+    let _modelsCatalog = [];
+    let es = null;
+
+    function destroyBenchCharts() {
+      benchCharts.forEach((c) => c.destroy());
+      benchCharts = [];
+    }
+
+    function destroyCurvesChart() {
+      if (curvesChart) {
+        curvesChart.destroy();
+        curvesChart = null;
+      }
+    }
+
+    function curvesChartOptions() {
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { labels: { color: "#b8c5d6" } } },
+        scales: {
+          x: { ticks: { color: "#8b9cb3" }, grid: { color: "#2a3544" }, title: { display: true, text: "Training stage", color: "#8b9cb3" } },
+          y: {
+            min: 0,
+            ticks: { color: "#8b9cb3" },
+            grid: { color: "#2a3544" },
+            title: { display: true, text: "mean count (of K negatives)", color: "#8b9cb3" },
+          },
+        },
+      };
+    }
+
+    function benchChartOptions() {
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { labels: { color: "#b8c5d6" } } },
+        scales: {
+          x: { ticks: { color: "#8b9cb3" }, grid: { color: "#2a3544" } },
+          y: {
+            min: 0,
+            max: 100,
+            ticks: { color: "#8b9cb3" },
+            grid: { color: "#2a3544" },
+            title: { display: true, text: "hit %", color: "#8b9cb3" },
+          },
+        },
+      };
+    }
+
+    async function fetchModels() {
+      $("models-status").textContent = "Loading…";
+      const resp = await fetch("/api/models");
+      const rows = await resp.json();
+      if (!resp.ok) throw new Error(resp.statusText);
+      $("models-status").textContent = rows.length ? "" : "No YAML specs in jepa/model_configs.";
+      const tb = $("models-table").querySelector("tbody");
+      tb.innerHTML = "";
+      const benchModel = $("bench-model");
+      const runModel = $("run-model");
+      const curvesModels = $("curves-models");
+      benchModel.innerHTML = "";
+      runModel.innerHTML = "";
+      curvesModels.innerHTML = "";
+      _modelsCatalog = rows;
+      for (const m of rows) {
+        const tr = document.createElement("tr");
+        tr.style.cursor = "pointer";
+        const stages = (m.stages || [])
+          .map((s) => `<span class="stage-pill ${s.exists ? "stage-yes" : "stage-no"}">S${s.stage}</span>`)
+          .join("");
+        const pStr =
+          m.n_parameters != null ? Number(m.n_parameters).toLocaleString() : "—";
+        const cStr =
+          m.cpu_single_forward_seconds != null
+            ? Number(m.cpu_single_forward_seconds).toExponential(3)
+            : "—";
+        tr.innerHTML = `<td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.architecture_id)}</td><td>${pStr}</td><td>${cStr}</td><td>${stages}</td><td style="font-size:0.8rem;color:var(--muted)">${escapeHtml(m.checkpoint_dir)}</td>`;
+        tr.addEventListener("click", () => showDetail(m.name));
+        tb.appendChild(tr);
+        benchModel.appendChild(new Option(m.name, m.name));
+        runModel.appendChild(new Option(m.name, m.name));
+        curvesModels.appendChild(new Option(m.name, m.name));
+      }
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    async function showDetail(name) {
+      $("model-detail-panel").classList.remove("hidden");
+      $("detail-title").textContent = name;
+      $("detail-params").textContent = "…";
+      $("detail-cpu").textContent = "…";
+      $("detail-next").textContent = "";
+      $("bench-output").classList.add("hidden");
+      try {
+        const d = await fetch("/api/models/" + encodeURIComponent(name)).then((r) => {
+          if (!r.ok) throw new Error(r.statusText);
+          return r.json();
+        });
+        $("detail-params").textContent = d.n_parameters.toLocaleString();
+        $("detail-cpu").textContent =
+          d.cpu_single_forward_seconds != null
+            ? Number(d.cpu_single_forward_seconds).toExponential(3) + " (from profile JSON after stage 0)"
+            : "— (run stage 0 or refresh_dashboard_metrics)";
+        const ns = d.next_stage;
+        $("detail-next").innerHTML =
+          ns === null
+            ? "<strong>Next:</strong> " + escapeHtml(d.next_stage_message)
+            : "<strong>Next stage:</strong> " + ns + " — " + escapeHtml(d.next_stage_message);
+      } catch (e) {
+        $("detail-params").textContent = "Error";
+        $("detail-cpu").textContent = "—";
+        $("detail-next").innerHTML = '<span class="err">' + escapeHtml(String(e)) + "</span>";
+      }
+    }
+
+    $("btn-benchmark").addEventListener("click", async () => {
+      const name = $("detail-title").textContent;
+      if (!name) return;
+      const batch = parseInt($("bench-batch").value, 10) || 8;
+      const pre = $("bench-output");
+      pre.classList.remove("hidden");
+      pre.textContent = "Running…";
+      try {
+        const q = new URLSearchParams({ batch_size: String(batch) });
+        const b = await fetch("/api/models/" + encodeURIComponent(name) + "/benchmark?" + q).then(async (r) => {
+          if (!r.ok) throw new Error(await r.text());
+          return r.json();
+        });
+        pre.textContent = JSON.stringify(b, null, 2);
+      } catch (e) {
+        pre.textContent = String(e);
+      }
+    });
+
+    $("btn-load-bench").addEventListener("click", async () => {
+      const selected = Array.from($("bench-model").selectedOptions).map((o) => o.value);
+      if (!selected.length) {
+        $("bench-hint").textContent =
+          "Select one or more models (Ctrl/⌘+click), then Load. Each metric gets its own chart; solid = val, dashed = train, same color per model.";
+        destroyBenchCharts();
+        return;
+      }
+      $("bench-hint").textContent = "Loading…";
+      let results;
+      try {
+        results = await Promise.all(
+          selected.map((name) =>
+            fetch("/api/models/" + encodeURIComponent(name) + "/stage-benchmarks").then(async (r) => {
+              if (!r.ok) throw new Error(name + ": " + r.statusText);
+              return r.json();
+            })
+          )
+        );
+      } catch (e) {
+        $("bench-hint").textContent = String(e);
+        destroyBenchCharts();
+        return;
+      }
+      const withData = results.filter((d) => (d.stages || []).length > 0);
+      if (!withData.length) {
+        const names = selected.join(", ");
+        $("bench-hint").textContent =
+          "No saved val move benchmarks for the selected model(s). Metrics live under checkpoint_dir/metrics/. " +
+          "For existing checkpoints: python -m jepa.scripts.refresh_dashboard_metrics --model <name>. (" +
+          names +
+          ")";
+        destroyBenchCharts();
+        return;
+      }
+      const stageSet = new Set();
+      withData.forEach((d) => (d.stages || []).forEach((s) => stageSet.add(s.stage)));
+      const sortedStages = [...stageSet].sort((a, b) => a - b);
+      const labels = sortedStages.map((s) => "S" + s);
+
+      function valuesForModel(data, field, split) {
+        const byStage = new Map((data.stages || []).map((s) => [s.stage, s]));
+        return sortedStages.map((st) => {
+          const row = byStage.get(st);
+          if (!row) return null;
+          let raw;
+          if (split === "val") {
+            raw = row[field];
+          } else {
+            const tr = row.train;
+            raw = tr && typeof tr === "object" ? tr[field] : null;
+          }
+          if (raw == null) return null;
+          const v = Number(raw);
+          return Number.isFinite(v) ? v : null;
+        });
+      }
+
+      destroyBenchCharts();
+      BENCH_METRICS.forEach((metric) => {
+        const canvas = $(metric.canvas);
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        const datasets = [];
+        withData.forEach((d, i) => {
+          const color = MODEL_LINE_COLORS[i % MODEL_LINE_COLORS.length];
+          datasets.push({
+            label: d.model + " (val)",
+            data: valuesForModel(d, metric.key, "val"),
+            borderColor: color,
+            backgroundColor: "transparent",
+            borderDash: [],
+            tension: 0.15,
+            spanGaps: false,
+          });
+          datasets.push({
+            label: d.model + " (train)",
+            data: valuesForModel(d, metric.key, "train"),
+            borderColor: color,
+            backgroundColor: "transparent",
+            borderDash: [6, 4],
+            tension: 0.15,
+            spanGaps: false,
+          });
+        });
+        benchCharts.push(
+          new Chart(ctx, {
+            type: "line",
+            data: { labels, datasets },
+            options: benchChartOptions(),
+          })
+        );
+      });
+
+      const skipped = results.filter((d) => !(d.stages || []).length).map((d) => d.model);
+      const metaBits = withData.map((d) => {
+        const n = d.meta && d.meta.sample_n != null ? d.meta.sample_n : "?";
+        const ts =
+          d.meta && d.meta.train_seed != null ? " train_seed=" + d.meta.train_seed : "";
+        return d.model + " n≈" + n + ts;
+      });
+      const paths = [...new Set(withData.map((d) => d.path).filter(Boolean))];
+      let hint =
+        "Stages " +
+        labels.join(", ") +
+        ". " +
+        metaBits.join(" · ") +
+        (paths.length ? " · " + (paths.length === 1 ? paths[0] : paths.join("; ")) : "");
+      if (skipped.length)
+        hint += " · Skipped (no benchmark rows): " + skipped.join(", ");
+      $("bench-hint").textContent = hint;
+    });
+
+    $("btn-load-curves").addEventListener("click", async () => {
+      const selected = Array.from($("curves-models").selectedOptions).map((o) => o.value);
+      const hintEl = $("curves-hint");
+      if (!selected.length) {
+        hintEl.textContent =
+          "Select one or more models (Ctrl/⌘+click), then Load. X-axis is training stage; each point is the last epoch of that stage.";
+        destroyCurvesChart();
+        return;
+      }
+      hintEl.textContent = "Loading…";
+      destroyCurvesChart();
+
+      const nByName = {};
+      let maxStages = 0;
+      for (const name of selected) {
+        const row = _modelsCatalog.find((m) => m.name === name);
+        const n = row && row.n_training_stages != null ? Number(row.n_training_stages) : 0;
+        nByName[name] = n;
+        if (n > maxStages) maxStages = n;
+      }
+      if (maxStages < 1) {
+        hintEl.textContent = "No training stages in catalog for the selected model(s).";
+        return;
+      }
+
+      const labels = [...Array(maxStages)].map((_, i) => "S" + (i + 1));
+
+      function lastRow(epochs) {
+        if (!epochs || !epochs.length) return null;
+        return epochs[epochs.length - 1];
+      }
+
+      function numField(row, key) {
+        if (!row) return null;
+        const v = row[key];
+        if (v == null) return null;
+        const x = Number(v);
+        return Number.isFinite(x) ? x : null;
+      }
+
+      const fetchTasks = [];
+      for (const name of selected) {
+        const n = nByName[name];
+        for (let s = 1; s <= n; s++) {
+          fetchTasks.push(
+            fetch("/api/models/" + encodeURIComponent(name) + "/curves?stage=" + s).then(async (r) => {
+              if (!r.ok) return { name, stage: s, data: { epochs: [], metrics_path: null } };
+              const data = await r.json();
+              return { name, stage: s, data };
+            })
+          );
+        }
+      }
+
+      let results;
+      try {
+        results = await Promise.all(fetchTasks);
+      } catch (e) {
+        hintEl.textContent = String(e);
+        return;
+      }
+
+      const byName = {};
+      for (const { name, stage, data } of results) {
+        if (!byName[name]) byName[name] = {};
+        byName[name][stage] = data;
+      }
+
+      const datasets = [];
+      let anyData = false;
+      const pathsSeen = [];
+
+      selected.forEach((name, i) => {
+        const color = MODEL_LINE_COLORS[i % MODEL_LINE_COLORS.length];
+        const valPts = [];
+        const trPts = [];
+        for (let s = 1; s <= maxStages; s++) {
+          if (s > nByName[name]) {
+            valPts.push(null);
+            trPts.push(null);
+            continue;
+          }
+          const pack = byName[name] && byName[name][s];
+          const data = pack || { epochs: [], metrics_path: null };
+          if (data.metrics_path && pathsSeen.indexOf(data.metrics_path) < 0) pathsSeen.push(data.metrics_path);
+          const last = lastRow(data.epochs);
+          const vVal = numField(last, "val_mean_n_neg_within_margin");
+          const vTr = numField(last, "train_mean_n_neg_within_margin");
+          valPts.push(vVal);
+          trPts.push(vTr);
+          if (vVal != null || vTr != null) anyData = true;
+        }
+        datasets.push({
+          label: name + " (val)",
+          data: valPts,
+          borderColor: color,
+          backgroundColor: "transparent",
+          borderDash: [],
+          tension: 0.15,
+          spanGaps: false,
+        });
+        datasets.push({
+          label: name + " (train)",
+          data: trPts,
+          borderColor: color,
+          backgroundColor: "transparent",
+          borderDash: [6, 4],
+          tension: 0.15,
+          spanGaps: false,
+        });
+      });
+
+      const canvas = $("curves-chart-margin");
+      if (!canvas) return;
+
+      if (!anyData) {
+        hintEl.textContent =
+          "No epoch JSONL with train_mean_n_neg_within_margin / val_mean_n_neg_within_margin for these stages (older runs or stages not trained yet)." +
+          (pathsSeen.length ? " Example: " + pathsSeen[0] : "");
+        return;
+      }
+
+      hintEl.textContent =
+        "Last epoch per training stage · stages " +
+        labels.join(", ") +
+        (pathsSeen.length ? " · " + pathsSeen.slice(0, 3).join("; ") : "");
+
+      const ctx = canvas.getContext("2d");
+      curvesChart = new Chart(ctx, {
+        type: "line",
+        data: { labels, datasets },
+        options: curvesChartOptions(),
+      });
+    });
+
+    function connectEvents() {
+      if (es) es.close();
+      es = new EventSource("/api/runs/events");
+      const logEl = $("run-log");
+      const gpuEl = $("gpu-strip");
+      es.onmessage = (ev) => {
+        let msg;
+        try {
+          msg = JSON.parse(ev.data);
+        } catch {
+          return;
+        }
+        if (msg.type === "log") {
+          logEl.textContent += (msg.stream === "stderr" ? "[err] " : "") + msg.line + "\n";
+          logEl.scrollTop = logEl.scrollHeight;
+        } else if (msg.type === "gpu") {
+          if (msg.sample)
+            gpuEl.textContent =
+              "GPU util " +
+              (msg.sample.utilization_gpu_pct ?? "?") +
+              "% | VRAM " +
+              (msg.sample.memory_used_mib ?? "?") +
+              " / " +
+              (msg.sample.memory_total_mib ?? "?") +
+              " MiB";
+          else gpuEl.textContent = "";
+        } else if (msg.type === "started") {
+          logEl.textContent += "\n--- started " + msg.model + " stage " + msg.stage + " ---\n";
+        } else if (msg.type === "finished") {
+          logEl.textContent += "\n--- finished (code " + msg.returncode + ") ---\n";
+          refreshRunStatus();
+        }
+      };
+    }
+
+    async function refreshRunStatus() {
+      const s = await fetch("/api/runs/status").then((r) => r.json());
+      $("run-status").textContent = s.busy
+        ? "Running: " + s.model + " stage " + s.stage
+        : "Idle (no active subprocess)";
+      $("btn-start-run").disabled = s.busy;
+    }
+
+    $("btn-start-run").addEventListener("click", async () => {
+      const model = $("run-model").value;
+      const rematerialize = $("run-remat").checked;
+      $("run-log").textContent = "";
+      try {
+        const res = await fetch("/api/runs/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, rematerialize }),
+        });
+        if (!res.ok) {
+          $("run-log").textContent = await res.text();
+          return;
+        }
+        const j = await res.json();
+        $("run-log").textContent = "Started stage " + j.stage + ": " + j.message + "\n";
+        refreshRunStatus();
+      } catch (e) {
+        $("run-log").textContent = String(e);
+      }
+    });
+
+    fetchModels()
+      .then(refreshRunStatus)
+      .then(connectEvents)
+      .catch((e) => {
+        $("models-status").textContent = "Failed to load models: " + String(e);
+      });
+  </script>
+</body>
+</html>

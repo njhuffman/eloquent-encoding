@@ -1,0 +1,12 @@
+python -m jepa.train --model bakeoff_og_1 --stage 9
+python -m jepa.train --model bakeoff_og_1 --stage 10
+python -m jepa.train --model bakeoff_og_1 --stage 11
+python -m jepa.train --model bakeoff_og_1 --stage 12
+python -m jepa.train --model bakeoff_og_1 --stage 13
+python -m jepa.train --model bakeoff_og_1 --stage 14
+python -m jepa.train --model bakeoff_og_1 --stage 15
+python -m jepa.train --model bakeoff_og_1 --stage 16
+python -m jepa.train --model bakeoff_og_1 --stage 17
+python -m jepa.train --model bakeoff_og_1 --stage 18
+python -m jepa.train --model bakeoff_og_1 --stage 19
+python -m jepa.train --model bakeoff_og_1 --stage 20

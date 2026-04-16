@@ -133,7 +133,7 @@ def _pick_hard_and_random(
     k_neg: int,
     rng: random.Random,
 ) -> list[np.ndarray] | None:
-    """sims aligned with legal_moves order; true_j index of true move."""
+    """sims[j] higher = z_hat closer to successor j (e.g. -||z_t(j)-z_hat||^2); true_j index of true move."""
     wrong_idx = [j for j in range(len(legal_moves)) if legal_moves[j] != true_move]
     if len(wrong_idx) < k_neg:
         return None
@@ -270,7 +270,7 @@ def materialize_jepa_split(
                             z_t = model.forward_target(st)
                             z_t_np = z_t.float().cpu().numpy()
                         zh = z_hat_np[bi]
-                        sims = (z_t_np * zh.reshape(1, -1)).sum(axis=-1)
+                        sims = -np.sum((z_t_np - zh.reshape(1, -1)) ** 2, axis=-1)
                         neg_tensors = _pick_hard_and_random(
                             sims,
                             true_j,

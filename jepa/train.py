@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 import sys
 from pathlib import Path
 
@@ -27,30 +28,17 @@ from jepa.h5_bootstrap import apply_hdf5_read_safety_env
 
 apply_hdf5_read_safety_env()
 
-import h5py
 import torch
 
 from jepa.architectures import build_model, resolve_config_for_id
 from jepa.checkpoint_paths import stage_checkpoint_path
 from jepa.checkpoint_utils import build_model_checkpoint
-from jepa.dataset import assert_h5_k_matches, get_dataloaders, h5_transition_counts
 from jepa.load import load_jepa_from_checkpoint
-from jepa.materialize import materialize_jepa_split, train_pool_indices, val_indices
-from jepa.materialize_cache import (
-    build_materialize_cache_key,
-    file_fingerprint,
-    hash_materialize_cache_key,
-    materialize_cache_paths,
-    try_load_materialize_cache,
-    write_materialize_cache_manifest,
-)
+from jepa.train_stage_data import MaterializeResolutionError, resolve_materialized_loaders_for_stage
+from jepa.dashboard_metrics import run_after_stage_zero, run_after_training_stage, skip_dashboard_metrics
+from jepa.metrics_paths import epoch_metrics_jsonl_path
 from jepa.model_spec import load_model_spec, spec_path_for_model
 from jepa.training_loop import run_training_epochs, save_submodule_sidecars
-
-
-def _move_h5_length(path: Path) -> int:
-    with h5py.File(path, "r") as f:
-        return int(f["fen"].shape[0])
 
 
 def cmd_init(spec: dict, device: torch.device) -> int:
@@ -74,10 +62,9 @@ def cmd_init(spec: dict, device: torch.device) -> int:
     torch.save(payload, out)
     save_submodule_sidecars(out, model)
     print(out, file=sys.stderr)
+    if not skip_dashboard_metrics():
+        run_after_stage_zero(spec, out, quiet=True)
     return 0
-
-
-MINING_POSITION_BATCH = 64
 
 
 def cmd_train_stage(spec: dict, stage: int, device: torch.device, *, rematerialize: bool) -> int:
@@ -93,193 +80,29 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device, *, remateriali
 
     st = stages_cfg[stage - 1]
     ckpt_dir = Path(spec["checkpoint_dir"])
-    cache_dir = Path(spec["cache_dir"])
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    prev_path = stage_checkpoint_path(ckpt_dir, name, stage - 1)
-    if not prev_path.is_file():
-        print(f"Error: missing checkpoint {prev_path} (need stage {stage - 1} first).", file=sys.stderr)
-        return 1
-
-    train_move_h5 = Path(spec["train_move_dataset_h5"])
-    val_move_h5 = Path(spec["val_move_dataset_h5"])
-    for label, p in (("train_move_dataset_h5", train_move_h5), ("val_move_dataset_h5", val_move_h5)):
-        if not p.is_file():
-            print(f"Error: {label} not found: {p}", file=sys.stderr)
-            return 1
-
-    n_train_rows = _move_h5_length(train_move_h5)
-    n_val_rows = _move_h5_length(val_move_h5)
-    vs = spec["val_sample"]
-    val_idx = val_indices(n_val_rows, vs["n"], vs["seed"])
-    train_idx = train_pool_indices(
-        n_train_rows,
-        set(),
-        st["sample"]["n"],
-        st["sample"]["seed"],
-    )
-
     arch_id = spec["architecture"]["id"]
     arch_cfg = spec["architecture"].get("config") or {}
     resolved = resolve_config_for_id(arch_id, arch_cfg)
-    k_neg = int(resolved["num_negatives_k"])
-    hn = st["hard_negatives"]
-    if hn["n_hard"] + hn["m_random"] != k_neg:
-        print(
-            f"Error: n_hard + m_random must equal num_negatives_k ({k_neg}).",
-            file=sys.stderr,
+
+    prev_path = stage_checkpoint_path(ckpt_dir, name, stage - 1)
+    try:
+        train_loader, val_loader, train_meta = resolve_materialized_loaders_for_stage(
+            spec, stage, device, rematerialize=rematerialize, quiet=False
         )
+    except MaterializeResolutionError as e:
+        print(f"Error: {e}", file=sys.stderr)
         return 1
-
-    evaluate_legals_n = hn.get("evaluate_legals_n")
-    if evaluate_legals_n is not None and evaluate_legals_n <= k_neg:
-        print(
-            f"Error: hard_negatives.evaluate_legals_n ({evaluate_legals_n}) must be > "
-            f"num_negatives_k ({k_neg}) so the sampled set can include {k_neg} wrong moves.",
-            file=sys.stderr,
-        )
-        return 1
-
-    use_hard = stage >= 2
-    train_fp = file_fingerprint(train_move_h5)
-    val_fp = file_fingerprint(val_move_h5)
-    mine_ckpt_fp = file_fingerprint(prev_path) if use_hard else None
-    cache_key = build_materialize_cache_key(
-        stage=stage,
-        use_hard_mining=use_hard,
-        architecture_id=arch_id,
-        architecture_resolved=resolved,
-        k_neg=k_neg,
-        n_hard=hn["n_hard"],
-        m_random=hn["m_random"],
-        mining_position_batch=MINING_POSITION_BATCH,
-        train_neg_seed=st["sample"]["seed"] + 17,
-        val_neg_seed=vs["seed"] + 99,
-        n_train_rows=n_train_rows,
-        n_val_rows=n_val_rows,
-        sample_n=st["sample"]["n"],
-        sample_seed=st["sample"]["seed"],
-        val_sample_n=vs["n"],
-        val_sample_seed=vs["seed"],
-        train_move_fingerprint=train_fp,
-        val_move_fingerprint=val_fp,
-        mining_checkpoint_fingerprint=mine_ckpt_fp,
-        evaluate_legals_n=evaluate_legals_n,
-    )
-    key_sha256 = hash_materialize_cache_key(cache_key)
-    train_h5_path, val_h5_path, manifest_path = materialize_cache_paths(
-        cache_dir, name, stage, key_sha256
-    )
-
-    rep_tr: dict
-    rep_va: dict
-    if not rematerialize:
-        loaded = try_load_materialize_cache(
-            cache_key=cache_key,
-            key_sha256=key_sha256,
-            train_h5_path=train_h5_path,
-            val_h5_path=val_h5_path,
-            manifest_path=manifest_path,
-            k_neg=k_neg,
-        )
-        if loaded is not None:
-            rep_tr, rep_va = loaded
-            print(
-                f"Reusing materialized cache {train_h5_path.name} / {val_h5_path.name}",
-                file=sys.stderr,
-            )
-        else:
-            rep_tr = {}
-            rep_va = {}
-    else:
-        rep_tr = {}
-        rep_va = {}
-
-    if not rep_tr:
-        mine_model = None
-        if use_hard:
-            mine_model = load_jepa_from_checkpoint(prev_path, device=device)
-            mine_model.eval()
-
-        print(f"Materializing train ({len(train_idx)} rows), use_hard_mining={use_hard}...", file=sys.stderr)
-        rep_tr = materialize_jepa_split(
-            train_move_h5,
-            train_idx,
-            train_h5_path,
-            model=mine_model,
-            device=device,
-            k_neg=k_neg,
-            n_hard=hn["n_hard"],
-            m_random=hn["m_random"],
-            use_hard_mining=use_hard,
-            neg_seed=st["sample"]["seed"] + 17,
-            mining_position_batch=MINING_POSITION_BATCH,
-            evaluate_legals_n=evaluate_legals_n,
-        )
-        print(f"Train report: {rep_tr}", file=sys.stderr)
-
-        print("Materializing val...", file=sys.stderr)
-        rep_va = materialize_jepa_split(
-            val_move_h5,
-            val_idx,
-            val_h5_path,
-            model=mine_model,
-            device=device,
-            k_neg=k_neg,
-            n_hard=hn["n_hard"],
-            m_random=hn["m_random"],
-            use_hard_mining=use_hard,
-            neg_seed=vs["seed"] + 99,
-            mining_position_batch=MINING_POSITION_BATCH,
-            evaluate_legals_n=evaluate_legals_n,
-        )
-        print(f"Val report: {rep_va}", file=sys.stderr)
-
-        write_materialize_cache_manifest(
-            manifest_path,
-            cache_key=cache_key,
-            key_sha256=key_sha256,
-            train_h5_path=train_h5_path,
-            val_h5_path=val_h5_path,
-        )
-
-    if rep_tr["n_written"] == 0:
-        print("Error: no training rows materialized.", file=sys.stderr)
-        return 1
-    if rep_va["n_written"] == 0:
-        print("Error: no val rows materialized.", file=sys.stderr)
-        return 1
-
-    assert_h5_k_matches(train_h5_path, k_neg)
-    assert_h5_k_matches(val_h5_path, k_neg)
 
     model = load_jepa_from_checkpoint(prev_path, device=device)
 
     d = spec["defaults"]
     tr = st["train"]
     use_amp = bool(d.get("use_amp", True)) and device.type == "cuda"
-    workers = int(d.get("dataloader_num_workers", 0))
 
-    train_loader, val_loader = get_dataloaders(
-        train_h5_path,
-        val_h5_path,
-        batch_size=int(tr["batch_size"]),
-        num_workers=workers,
-        in_memory=bool(d.get("in_memory", False)),
-    )
-
-    n_train, n_val = h5_transition_counts(train_h5_path, val_h5_path)
-    train_meta = {
-        "stage": stage,
-        "n_train_boards": n_train,
-        "n_val_boards": n_val,
-        "train_move_dataset_h5": str(train_move_h5),
-        "val_move_dataset_h5": str(val_move_h5),
-        "train_h5": str(train_h5_path),
-        "val_h5": str(val_h5_path),
-        "train_materialize_report": rep_tr,
-        "val_materialize_report": rep_va,
-    }
+    metrics_path = epoch_metrics_jsonl_path(ckpt_dir, name, stage)
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    if metrics_path.is_file():
+        metrics_path.unlink()
 
     best_val, best_ep = run_training_epochs(
         model,
@@ -295,6 +118,8 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device, *, remateriali
         vicreg_var_coef=float(d["vicreg_var_coef"]),
         vicreg_std_target=float(d["vicreg_std_target"]),
         log_interval=int(d.get("log_interval", 100)),
+        metrics_jsonl_path=metrics_path,
+        metrics_run_meta={"model": name, "stage": stage},
     )
 
     out_path = stage_checkpoint_path(ckpt_dir, name, stage)
@@ -324,6 +149,8 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device, *, remateriali
     torch.save(payload, out_path)
     save_submodule_sidecars(out_path, model)
     print(f"Saved {out_path} (best_val={best_val:.4f} @ ep {best_ep})", file=sys.stderr)
+    if not skip_dashboard_metrics():
+        run_after_training_stage(spec, stage, out_path, quiet=True)
     return 0
 
 
@@ -337,7 +164,15 @@ def main() -> int:
         action="store_true",
         help="Ignore materialized HDF5 cache and rebuild train/val JEPA files for this stage",
     )
+    parser.add_argument(
+        "--skip-dashboard-metrics",
+        action="store_true",
+        help="Do not write dashboard profile / val move-benchmark JSON (also: JEPA_SKIP_DASHBOARD_METRICS=1)",
+    )
     args = parser.parse_args()
+
+    if args.skip_dashboard_metrics:
+        os.environ["JEPA_SKIP_DASHBOARD_METRICS"] = "1"
 
     if args.device is not None:
         device = torch.device(args.device)
