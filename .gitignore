@@ -19,6 +19,8 @@ databases/
 embedding/data/
 embedding/artifacts/
 checkpoints/
+jepa_checkpoints/
+move_predictor_checkpoints/
 
 # IDE / editor
 .idea/
@@ -37,3 +39,4 @@ Thumbs.db
 .ruff_cache/
 .coverage
 htmlcov/
+.cursor/
