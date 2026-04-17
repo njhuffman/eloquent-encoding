@@ -163,3 +163,23 @@ stages:
       epochs: 20
       learning_rate: 0.00005
       weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 13
+    hard_negatives:
+      n_hard: 4
+      m_random: 4
+    train:
+      epochs: 30
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 114
+    hard_negatives:
+      n_hard: 4
+      m_random: 4
+    train:
+      epochs: 30
+      learning_rate: 0.00005
+      weight_decay: 0.01
