@@ -1,10 +1,9 @@
 """
-Build JEPA-format HDF5 from move-sample HDF5 + optional hard-negative mining.
+Build JEPA-format training tensors in RAM from move-sample HDF5 + optional hard-negative mining.
 """
 
 from __future__ import annotations
 
-import json
 import random
 import sys
 from pathlib import Path
@@ -26,65 +25,42 @@ from jepa.move_row_codec import row_to_board_and_move, tensor_after_move, tensor
 
 FLUSH_EVERY = 2048
 
-
-def _create_jepa_file(path: Path, k_neg: int) -> tuple[h5py.File, dict[str, h5py.Dataset]]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        path.unlink()
-    f = h5py.File(path, "w")
-    f.attrs["num_negatives_k"] = k_neg
-    ch = (1, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS)
-    d_board = f.create_dataset(
-        "board_t",
-        shape=(0, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS),
-        maxshape=(None, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS),
-        dtype=np.float32,
-        chunks=ch,
-    )
-    d_pos = f.create_dataset(
-        "board_t_plus_1_pos",
-        shape=(0, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS),
-        maxshape=(None, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS),
-        dtype=np.float32,
-        chunks=ch,
-    )
-    d_neg = f.create_dataset(
-        "board_t_plus_1_negs",
-        shape=(0, k_neg, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS),
-        maxshape=(None, k_neg, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS),
-        dtype=np.float32,
-        chunks=(1, k_neg, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS),
-    )
-    d_elo = f.create_dataset("elo", shape=(0,), maxshape=(None,), dtype=np.float32, chunks=(1024,))
-    return f, {
-        "board_t": d_board,
-        "board_t_plus_1_pos": d_pos,
-        "board_t_plus_1_negs": d_neg,
-        "elo": d_elo,
-    }
+JepaSplitArrays = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 
 
-def _flush(
-    h5: h5py.File,
-    bufs: dict[str, list],
-    dsets: dict[str, h5py.Dataset],
-    next_idx: int,
-    k_neg: int,
-) -> int:
+def estimate_materialized_split_bytes(n_rows: int, k_neg: int) -> int:
+    """Upper-bound bytes for float32 JEPA tensors for ``n_rows`` positions (train or val split)."""
+    if n_rows < 0:
+        raise ValueError("n_rows must be non-negative")
+    elem = BOARD_HEIGHT * BOARD_WIDTH * BOARD_CHANNELS
+    per_row = 4 * int((2 + k_neg) * elem + 1)
+    return int(n_rows) * per_row
+
+
+def _append_buf_blocks(blocks: dict[str, list[np.ndarray]], bufs: dict[str, list]) -> None:
     if not bufs["board_t"]:
-        return next_idx
-    n = len(bufs["board_t"])
-    new_size = next_idx + n
-    for name in ("board_t", "board_t_plus_1_pos", "elo"):
-        dsets[name].resize(new_size, axis=0)
-        batch = np.stack(bufs[name], axis=0).astype(np.float32, copy=False)
-        dsets[name][next_idx:new_size] = batch
-        bufs[name].clear()
-    dsets["board_t_plus_1_negs"].resize(new_size, axis=0)
-    neg_batch = np.stack(bufs["board_t_plus_1_negs"], axis=0)
-    dsets["board_t_plus_1_negs"][next_idx:new_size] = neg_batch
-    bufs["board_t_plus_1_negs"].clear()
-    return new_size
+        return
+    blocks["board_t"].append(np.stack(bufs["board_t"], axis=0).astype(np.float32, copy=False))
+    blocks["board_t_plus_1_pos"].append(np.stack(bufs["board_t_plus_1_pos"], axis=0).astype(np.float32, copy=False))
+    blocks["board_t_plus_1_negs"].append(np.stack(bufs["board_t_plus_1_negs"], axis=0))
+    blocks["elo"].append(np.stack(bufs["elo"], axis=0).astype(np.float32, copy=False))
+    for k in bufs:
+        bufs[k].clear()
+
+
+def _concat_blocks(blocks: dict[str, list[np.ndarray]], k_neg: int) -> JepaSplitArrays:
+    h, w, c = BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS
+    if not blocks["board_t"]:
+        bt = np.empty((0, h, w, c), dtype=np.float32)
+        pos = np.empty((0, h, w, c), dtype=np.float32)
+        negs = np.empty((0, k_neg, h, w, c), dtype=np.float32)
+        elo = np.empty((0,), dtype=np.float32)
+        return bt, pos, negs, elo
+    bt = np.concatenate(blocks["board_t"], axis=0)
+    pos = np.concatenate(blocks["board_t_plus_1_pos"], axis=0)
+    negs = np.concatenate(blocks["board_t_plus_1_negs"], axis=0)
+    elo = np.concatenate(blocks["elo"], axis=0)
+    return bt, pos, negs, elo
 
 
 def _random_neg_tensors(
@@ -160,8 +136,8 @@ def _pick_hard_and_random(
 def materialize_jepa_split(
     move_h5_path: Path,
     row_indices: np.ndarray,
-    out_h5_path: Path,
     *,
+    progress_desc: str = "materialize",
     model: ChessJEPA | None,
     device: torch.device,
     k_neg: int,
@@ -171,9 +147,9 @@ def materialize_jepa_split(
     neg_seed: int,
     mining_position_batch: int = 64,
     evaluate_legals_n: int | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], JepaSplitArrays]:
     """
-    Write JEPA HDF5 at out_h5_path. model may be None only if not use_hard_mining.
+    Build JEPA arrays in RAM. model may be None only if not use_hard_mining.
     evaluate_legals_n: when hard mining, score at most this many legal moves (None = all).
     """
     if n_hard + m_random != k_neg:
@@ -186,6 +162,12 @@ def materialize_jepa_split(
     n_written = 0
 
     bufs: dict[str, list] = {
+        "board_t": [],
+        "board_t_plus_1_pos": [],
+        "board_t_plus_1_negs": [],
+        "elo": [],
+    }
+    blocks: dict[str, list[np.ndarray]] = {
         "board_t": [],
         "board_t_plus_1_pos": [],
         "board_t_plus_1_negs": [],
@@ -205,12 +187,10 @@ def materialize_jepa_split(
             pr = int(f_m["promotion"][i])
             return str(fen), elo, fs, ts, pr
 
-        h5_wr, dsets = _create_jepa_file(out_h5_path, k_neg)
-        try:
-            next_idx = 0
-            pos = 0
-            pbar = tqdm(total=len(row_indices), desc=f"materialize {out_h5_path.name}", unit="rows")
+        pos = 0
+        pbar = tqdm(total=len(row_indices), desc=progress_desc, unit="rows")
 
+        try:
             while pos < len(row_indices):
                 end = min(pos + mining_position_batch, len(row_indices))
                 chunk_idx = row_indices[pos:end]
@@ -253,7 +233,7 @@ def materialize_jepa_split(
                         elo_t = torch.tensor(
                             [x[4] for x in batch_items], dtype=torch.float32, device=device
                         )
-                        z_o, z_hat = model.forward_online(bt_stack, elo_t)
+                        _, z_hat = model.forward_online(bt_stack, elo_t)
                         z_hat_np = z_hat.float().cpu().numpy()
 
                     for bi, item in enumerate(batch_items):
@@ -291,7 +271,7 @@ def materialize_jepa_split(
                         bufs["elo"].append(np.float32(elo))
                         n_written += 1
                         if len(bufs["board_t"]) >= FLUSH_EVERY:
-                            next_idx = _flush(h5_wr, bufs, dsets, next_idx, k_neg)
+                            _append_buf_blocks(blocks, bufs)
 
                 elif batch_items:
                     for item in batch_items:
@@ -306,25 +286,23 @@ def materialize_jepa_split(
                         bufs["elo"].append(np.float32(elo))
                         n_written += 1
                         if len(bufs["board_t"]) >= FLUSH_EVERY:
-                            next_idx = _flush(h5_wr, bufs, dsets, next_idx, k_neg)
+                            _append_buf_blocks(blocks, bufs)
 
                 pbar.update(len(chunk_idx))
                 pos = end
 
-            next_idx = _flush(h5_wr, bufs, dsets, next_idx, k_neg)
-            pbar.close()
+            _append_buf_blocks(blocks, bufs)
         finally:
-            h5_wr.close()
+            pbar.close()
 
-    report = {
+    arrays = _concat_blocks(blocks, k_neg)
+    report: dict[str, Any] = {
         "n_written": n_written,
         "n_skip": n_skip,
-        "out_h5": str(out_h5_path),
+        "storage": "ram",
         "use_hard_mining": use_hard_mining,
     }
-    report_path = out_h5_path.with_suffix(".report.json")
-    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    return report
+    return report, arrays
 
 
 def train_pool_indices(

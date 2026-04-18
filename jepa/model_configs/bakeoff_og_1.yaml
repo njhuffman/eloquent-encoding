@@ -15,8 +15,7 @@ defaults:
   vicreg_var_coef: 25.0
   vicreg_std_target: 1.0
   batch_size: 256
-  dataloader_num_workers: 4
-  in_memory: false
+  dataloader_num_workers: 0
   log_interval: 500
   use_amp: true
 
@@ -175,11 +174,51 @@ stages:
       weight_decay: 0.01
   - sample:
       n: 100000
-      seed: 114
+      seed: 14
     hard_negatives:
       n_hard: 4
       m_random: 4
     train:
       epochs: 30
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 15
+    hard_negatives:
+      n_hard: 4
+      m_random: 4
+    train:
+      epochs: 30
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 16
+    hard_negatives:
+      n_hard: 4
+      m_random: 4
+    train:
+      epochs: 25
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 17
+    hard_negatives:
+      n_hard: 4
+      m_random: 4
+    train:
+      epochs: 25
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 17
+    hard_negatives:
+      n_hard: 8
+      m_random: 0
+    train:
+      epochs: 20
       learning_rate: 0.00005
       weight_decay: 0.01

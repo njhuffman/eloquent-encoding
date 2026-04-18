@@ -23,7 +23,6 @@ def refresh_epoch_metrics_for_stage(
     stage: int,
     device: torch.device,
     *,
-    rematerialize: bool = False,
     quiet: bool = False,
     dry_run: bool = False,
 ) -> bool:
@@ -48,7 +47,7 @@ def refresh_epoch_metrics_for_stage(
 
     try:
         train_loader, val_loader, _train_meta = resolve_materialized_loaders_for_stage(
-            spec, stage, device, rematerialize=rematerialize, quiet=quiet
+            spec, stage, device, quiet=quiet
         )
     except MaterializeResolutionError as e:
         print(f"Warning: {name} stage {stage}: materialize failed: {e}", file=sys.stderr)
@@ -128,7 +127,6 @@ def refresh_epoch_metrics_for_model(
     *,
     device: torch.device,
     stages: list[int] | None = None,
-    rematerialize: bool = False,
     quiet: bool = False,
     dry_run: bool = False,
 ) -> list[int]:
@@ -167,7 +165,6 @@ def refresh_epoch_metrics_for_model(
             spec,
             stage,
             device,
-            rematerialize=rematerialize,
             quiet=quiet,
             dry_run=False,
         ):

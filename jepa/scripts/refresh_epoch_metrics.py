@@ -6,9 +6,9 @@ Append one JSONL row per stage by re-evaluating saved checkpoints (train+val for
   python -m jepa.scripts.refresh_epoch_metrics --all-models
   python -m jepa.scripts.refresh_epoch_metrics --model foo --stages 1 2
   python -m jepa.scripts.refresh_epoch_metrics --model foo --dry-run
-  python -m jepa.scripts.refresh_epoch_metrics --model foo --rematerialize   # rebuild cached H5 if needed
 
-Requires materialized train/val HDF5 under cache_dir (from a prior train run, or rematerialize).
+Each stage re-materializes train/val JEPA tensors in RAM (same rules as training), then runs
+one forward pass per loader.
 """
 
 from __future__ import annotations
@@ -49,11 +49,6 @@ def main() -> int:
     )
     p.add_argument("--dry-run", action="store_true", help="List stages that would run")
     p.add_argument(
-        "--rematerialize",
-        action="store_true",
-        help="Rebuild materialized HDF5 cache for each stage (slow; use if cache missing)",
-    )
-    p.add_argument(
         "--device",
         choices=("auto", "cuda", "cpu"),
         default="auto",
@@ -87,7 +82,6 @@ def main() -> int:
             spec,
             device=device,
             stages=stages,
-            rematerialize=args.rematerialize,
             quiet=quiet,
             dry_run=args.dry_run,
         )
@@ -109,7 +103,6 @@ def main() -> int:
                 spec,
                 device=device,
                 stages=stages,
-                rematerialize=args.rematerialize,
                 quiet=quiet,
                 dry_run=args.dry_run,
             )

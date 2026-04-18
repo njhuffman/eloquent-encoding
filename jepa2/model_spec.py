@@ -1,14 +1,15 @@
-"""YAML model spec: architecture, train/val move HDF5 paths, per-stage sample/train."""
+"""YAML model spec for jepa2: defaults + per-stage deep merge (no materialized negatives)."""
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-MODEL_CONFIGS_DIR = _REPO_ROOT / "jepa" / "model_configs"
+MODEL_CONFIGS_DIR = _REPO_ROOT / "jepa2" / "model_configs"
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -23,22 +24,23 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 DEFAULTS: dict[str, Any] = {
     "ema_momentum": 0.999,
-    "triplet_margin_alpha": 0.2,
-    "vicreg_var_coef": 0.1,
-    "vicreg_std_target": 1.0,
+    "M_train": 64,
+    "M_eval": 64,
+    "ce_weight": 1.0,
+    "mse_played_weight": 0.1,
+    "ce_label_smoothing": 0.0,
     "batch_size": 256,
     "weight_decay": 0.05,
-    "dataloader_num_workers": 4,
+    "dataloader_num_workers": 0,
     "log_interval": 100,
     "use_amp": True,
-}
-
-DASHBOARD_METRICS_DEFAULTS: dict[str, Any] = {
-    "move_benchmark_sample_n": 2048,
-    "move_benchmark_seed": 42,
-    "move_benchmark_train_seed": 1000045,
-    "move_benchmark_succ_chunk": 256,
-    "device": "auto",
+    "vicreg": {
+        "inv_coef": 0.0,
+        "var_coef": 0.1,
+        "cov_coef": 0.0,
+        "std_target": 1.0,
+    },
+    "val_legal_seed": 42,
 }
 
 
@@ -49,8 +51,7 @@ def load_model_spec(path: Path) -> dict[str, Any]:
     name = raw.get("name")
     if not name or not isinstance(name, str):
         raise ValueError('spec must have string "name" (same as --model)')
-    name = name.strip()
-    raw["name"] = name
+    raw["name"] = name.strip()
 
     if "architecture" not in raw or not isinstance(raw["architecture"], dict):
         raise ValueError('spec must have "architecture" object')
@@ -71,30 +72,28 @@ def load_model_spec(path: Path) -> dict[str, Any]:
         raise ValueError('val_sample: {n, seed} required')
     vs["n"] = int(vs["n"])
     vs["seed"] = int(vs["seed"])
+    raw["val_sample"] = vs
 
     ckpt = raw.get("checkpoint_dir")
     if not ckpt:
-        raw["checkpoint_dir"] = str((_REPO_ROOT / "jepa_checkpoints" / name).resolve())
+        raw["checkpoint_dir"] = str((_REPO_ROOT / "jepa2_checkpoints" / name).resolve())
     else:
         p = Path(ckpt)
         raw["checkpoint_dir"] = str(p.expanduser().resolve() if p.is_absolute() else (_REPO_ROOT / p).resolve())
 
-    cd = raw.get("cache_dir")
-    if cd is None:
-        raw["cache_dir"] = str(Path(raw["checkpoint_dir"]) / "cache")
-    else:
-        p = Path(cd)
-        raw["cache_dir"] = str(p.expanduser().resolve() if p.is_absolute() else (_REPO_ROOT / p).resolve())
-
-    stages = raw.get("stages")
-    if not isinstance(stages, list) or not stages:
-        raise ValueError("stages: non-empty list required for training stages")
-
-    merged_defaults = _deep_merge(DEFAULTS, raw.get("defaults") or {})
-    merged_defaults.pop("in_memory", None)
+    merged_defaults = _deep_merge(copy.deepcopy(DEFAULTS), raw.get("defaults") or {})
     raw["defaults"] = merged_defaults
 
-    dm = _deep_merge(dict(DASHBOARD_METRICS_DEFAULTS), raw.get("dashboard_metrics") or {})
+    dm = _deep_merge(
+        {
+            "move_benchmark_sample_n": 2048,
+            "move_benchmark_seed": 42,
+            "move_benchmark_train_seed": 1000045,
+            "move_benchmark_succ_chunk": 256,
+            "device": "auto",
+        },
+        raw.get("dashboard_metrics") or {},
+    )
     dm["move_benchmark_sample_n"] = int(dm["move_benchmark_sample_n"])
     dm["move_benchmark_seed"] = int(dm["move_benchmark_seed"])
     dm["move_benchmark_train_seed"] = int(dm["move_benchmark_train_seed"])
@@ -102,6 +101,10 @@ def load_model_spec(path: Path) -> dict[str, Any]:
     if dm["device"] not in ("auto", "cuda", "cpu"):
         raise ValueError('dashboard_metrics.device must be "auto", "cuda", or "cpu"')
     raw["dashboard_metrics"] = dm
+
+    stages = raw.get("stages")
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("stages: non-empty list required")
 
     for i, st in enumerate(stages):
         if not isinstance(st, dict):
@@ -111,23 +114,6 @@ def load_model_spec(path: Path) -> dict[str, Any]:
             raise KeyError(f"stages[{i}].sample needs n, seed")
         sp["n"] = int(sp["n"])
         sp["seed"] = int(sp["seed"])
-        hn = st.get("hard_negatives")
-        if not isinstance(hn, dict) or "n_hard" not in hn or "m_random" not in hn:
-            raise KeyError(f"stages[{i}].hard_negatives needs n_hard, m_random")
-        hn["n_hard"] = int(hn["n_hard"])
-        hn["m_random"] = int(hn["m_random"])
-        if hn["n_hard"] < 0 or hn["m_random"] < 0:
-            raise ValueError(f"stages[{i}].hard_negatives n_hard and m_random must be >= 0")
-        if hn["n_hard"] + hn["m_random"] < 1:
-            raise ValueError(
-                f"stages[{i}].hard_negatives n_hard + m_random must be >= 1 (got "
-                f"{hn['n_hard']}+{hn['m_random']})"
-            )
-        if "evaluate_legals_n" in hn:
-            ev = int(hn["evaluate_legals_n"])
-            if ev < 2:
-                raise ValueError(f"stages[{i}].hard_negatives.evaluate_legals_n must be >= 2, got {ev}")
-            hn["evaluate_legals_n"] = ev
         tr = st.get("train")
         if not isinstance(tr, dict) or "epochs" not in tr or "learning_rate" not in tr:
             raise KeyError(f"stages[{i}].train needs epochs, learning_rate")
@@ -142,12 +128,31 @@ def load_model_spec(path: Path) -> dict[str, Any]:
     return raw
 
 
+def resolve_training_config_for_stage(spec: dict[str, Any], stage_index: int) -> dict[str, Any]:
+    """
+    Merge ``spec["defaults"]`` with ``spec["stages"][stage_index]`` top-level keys
+    (excluding sample/train), then attach merged ``train`` from the stage.
+    ``stage_index`` is 0-based (``stages[0]`` is training stage 1).
+    """
+    if stage_index < 0 or stage_index >= len(spec["stages"]):
+        raise IndexError(f"stage_index {stage_index} out of range for stages")
+    base = copy.deepcopy(spec["defaults"])
+    st = spec["stages"][stage_index]
+    override = {k: v for k, v in st.items() if k not in ("sample", "train")}
+    merged = _deep_merge(base, override)
+    tr = st["train"]
+    merged["train"] = {
+        "epochs": int(tr["epochs"]),
+        "learning_rate": float(tr["learning_rate"]),
+        "weight_decay": float(tr["weight_decay"]),
+        "batch_size": int(tr["batch_size"]),
+    }
+    return merged
+
+
 def spec_path_for_model(model_name: str) -> Path:
-    for ext in (".yaml", ".yml", ".json"):
+    for ext in (".yaml", ".yml"):
         p = MODEL_CONFIGS_DIR / f"{model_name}{ext}"
         if p.is_file():
             return p
-    raise FileNotFoundError(
-        f"No spec at {MODEL_CONFIGS_DIR / (model_name + '.yaml')}"
-        f" (or .yml / .json)"
-    )
+    raise FileNotFoundError(f"No jepa2 spec at {MODEL_CONFIGS_DIR / (model_name + '.yaml')}")

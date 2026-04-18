@@ -19,7 +19,7 @@ python -m jepa.scripts.refresh_dashboard_metrics --model YOUR_MODEL
 python -m jepa.scripts.refresh_dashboard_metrics --all-models
 ```
 
-**Epoch metrics JSONL without retraining** (one forward pass over train + val per stage; **appends** a line to `{name}_stage_{stage}_epochs.jsonl` with `source: "checkpoint_refresh"`). Requires the **materialized** cached HDF5 for that stage (from an earlier train run, or pass `--rematerialize` to rebuild). Training stages are **1 … N** (there is no epoch JSONL for stage 0).
+**Epoch metrics JSONL without retraining** (one forward pass over train + val per stage; **appends** a line to `{name}_stage_{stage}_epochs.jsonl` with `source: "checkpoint_refresh"`). Each stage re-builds JEPA tensors in RAM (same sampling/mining rules as training) before the forward pass. Training stages are **1 … N** (there is no epoch JSONL for stage 0).
 
 ```bash
 python -m jepa.scripts.refresh_epoch_metrics --model YOUR_MODEL

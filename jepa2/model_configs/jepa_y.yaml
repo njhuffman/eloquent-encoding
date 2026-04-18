@@ -1,66 +1,78 @@
-name: bakeoff_wide_1
-# Wider FFN + embedding (og layer counts). Single-stage schedule; LR matches bakeoff_og_2.
+name: jepa_y
 # Devcontainer: persistent bulk volume (see .devcontainer/README.md). Override with a repo-relative path if not using the volume.
-checkpoint_dir: /mnt/eloquence_bulk/jepa_checkpoints/jepa_y_1M
+checkpoint_dir: /mnt/eloquence_bulk/jepa2_checkpoints/jepa_y
 train_move_dataset_h5: databases/moves/training_moves_1M.h5
 val_move_dataset_h5: databases/moves/validation_moves_1M.h5
 
-# Rows sampled from val_move_dataset_h5 only (independent of training file).
 val_sample:
   n: 10000
   seed: 42
 
 defaults:
   ema_momentum: 0.99
-  triplet_margin_alpha: 1.0
-  vicreg_var_coef: 25.0
-  vicreg_std_target: 1.0
   batch_size: 128
   dataloader_num_workers: 4
-  log_interval: 500
+  log_interval: 1
   use_amp: true
+  weight_decay: 0.01
+
+  M_train: 32
+  M_eval: 32
+  ce_weight: 1.0
+  mse_played_weight: 0.05
+  ce_label_smoothing: 0.0
+  train_shuffle_seed: 7
+  vicreg:
+    inv_coef: 0.0
+    var_coef: 0.1
+    cov_coef: 0.0
+    std_target: 1.0
 
 architecture:
-  id: chess_jepa_v1
+  id: chess_jepa_v2
   config:
-    d_model: 512
+    d_model: 256
     encoder_layers: 4
     predictor_layers: 2
     nhead: 8
-    dim_feedforward: 2048
+    dim_feedforward: 1024
     dropout: 0.0
     use_cls: true
     elo_scale: 3000.0
 
+# jepa_y stage 1 only for now (same sample/train hyperparameters as the original first stage).
 stages:
   - sample:
-      n: 200000
+      n: 100000
       seed: 1
-    hard_negatives:
-      n_hard: 4
-      m_random: 4
     train:
       epochs: 1
       learning_rate: 0.00005
       weight_decay: 0.01
-
   - sample:
       n: 100000
       seed: 2
-    hard_negatives:
-      n_hard: 4
-      m_random: 4
     train:
       epochs: 1
       learning_rate: 0.00005
       weight_decay: 0.01
-
   - sample:
       n: 100000
       seed: 3
-    hard_negatives:
-      n_hard: 4
-      m_random: 4
+    train:
+      epochs: 1
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 4
+    train:
+      epochs: 1
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 5
     train:
       epochs: 1
       learning_rate: 0.00005

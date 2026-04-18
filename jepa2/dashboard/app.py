@@ -1,4 +1,4 @@
-"""FastAPI app: REST catalog, curves, benchmark, and SSE for training runs + GPU polling."""
+"""FastAPI app for jepa2: catalog, per-stage metrics curves, benchmarks, training runner."""
 
 from __future__ import annotations
 
@@ -13,33 +13,27 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from jepa.checkpoint_paths import stage_checkpoint_path
-from jepa.dashboard.benchmark_infer import benchmark_forward_pass, cache_key_for_benchmark, count_parameters_for_spec
-from jepa.dashboard.orchestration import is_safe_model_name, next_missing_stage, spec_file_stem_exists
-from jepa.dashboard.scan import (
+from jepa2.checkpoint_paths import stage_checkpoint_path
+from jepa2.dashboard.benchmark_infer import benchmark_forward_pass, cache_key_for_benchmark, count_parameters_for_spec
+from jepa2.dashboard.orchestration import is_safe_model_name, next_missing_stage, spec_file_stem_exists
+from jepa2.dashboard.scan import (
     list_models_catalog,
     load_spec_by_model_name,
-    read_epoch_metrics_jsonl,
+    read_curves_payload_for_stage,
     read_model_profile,
     read_stage_benchmarks,
     repo_root,
-    sparse_stage_points_from_checkpoints,
     summarize_checkpoint,
     stage_grid_for_spec,
 )
-from jepa.metrics_paths import (
-    epoch_metrics_jsonl_path,
-    model_profile_json_path,
-    stage_benchmarks_json_path,
-)
+from jepa2.metrics_paths import model_profile_json_path, stage_benchmarks_json_path
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="JEPA Training Dashboard", version="1.0.0")
+app = FastAPI(title="jepa2 Training Dashboard", version="1.0.0")
 
 if _STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
-
 
 _benchmark_cache: dict[str, dict[str, Any]] = {}
 
@@ -66,8 +60,6 @@ class RunBroadcaster:
 
 
 class TrainingRunManager:
-    """Single active ``jepa.train`` subprocess."""
-
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._proc: asyncio.subprocess.Process | None = None
@@ -98,7 +90,7 @@ class TrainingRunManager:
             cmd = [
                 sys.executable,
                 "-m",
-                "jepa.train",
+                "jepa2.train",
                 "--model",
                 model,
                 "--stage",
@@ -213,7 +205,7 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "package": "jepa2"}
 
 
 @app.get("/api/models")
@@ -272,27 +264,14 @@ async def api_curves(name: str, stage: int) -> dict[str, Any]:
     if not is_safe_model_name(name):
         raise HTTPException(400, "invalid model name")
     if stage < 1:
-        raise HTTPException(400, "stage must be >= 1 for training curves")
+        raise HTTPException(400, "stage must be >= 1")
     try:
         spec = load_spec_by_model_name(name)
     except FileNotFoundError:
         raise HTTPException(404, "model not found")
     if stage > len(spec["stages"]):
         raise HTTPException(400, "stage out of range")
-    ckpt_dir = Path(spec["checkpoint_dir"])
-    mpath = epoch_metrics_jsonl_path(ckpt_dir, name, stage)
-    epochs = read_epoch_metrics_jsonl(mpath)
-    if epochs:
-        sparse: list[dict[str, Any]] = []
-    else:
-        sparse = [p for p in sparse_stage_points_from_checkpoints(spec) if p.get("stage") == stage]
-    return {
-        "model": name,
-        "stage": stage,
-        "epochs": epochs,
-        "metrics_path": str(mpath),
-        "sparse_fallback": sparse,
-    }
+    return read_curves_payload_for_stage(spec, stage)
 
 
 @app.get("/api/models/{name}/stage-benchmarks")
@@ -393,8 +372,6 @@ async def api_run_events() -> StreamingResponse:
     q = _run_manager.broadcaster.subscribe()
 
     async def gen():
-        # Firefox and some proxies close the socket if no bytes are sent before the first await
-        # on an empty queue; SSE comments are ignored by EventSource but flush the response.
         yield ": sse-ok\n\n"
         try:
             while True:

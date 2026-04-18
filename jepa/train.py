@@ -6,10 +6,8 @@ Chess-JEPA training from train/val move-sample HDF5s, staged checkpoints.
   python -m jepa.train --model NAME --stage 1     # load stage_0, mine+train -> stage_1.pt
   python -m jepa.train --model NAME --stage N     # load stage_{N-1}, uses spec stages[N-1]
 
-Materialized train/val HDF5s (mining / negatives) are cached under cache_dir with a
-content hash (seeds, move files, architecture, prior checkpoint when hard-mining).
-Changing learning rate or epochs reuses that cache; use --rematerialize to rebuild.
-Old unkeyed files named {name}_stage{N}_train.h5 are no longer written — safe to delete.
+For each training stage, JEPA tensors (boards, negatives, Elo) are built in RAM from the
+move HDF5s (no derived HDF5 cache on disk). A RAM budget check runs before materialization.
 """
 
 from __future__ import annotations
@@ -67,7 +65,7 @@ def cmd_init(spec: dict, device: torch.device) -> int:
     return 0
 
 
-def cmd_train_stage(spec: dict, stage: int, device: torch.device, *, rematerialize: bool) -> int:
+def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
     name = spec["name"]
     stages_cfg = spec["stages"]
     if stage < 1 or stage > len(stages_cfg):
@@ -87,7 +85,7 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device, *, remateriali
     prev_path = stage_checkpoint_path(ckpt_dir, name, stage - 1)
     try:
         train_loader, val_loader, train_meta = resolve_materialized_loaders_for_stage(
-            spec, stage, device, rematerialize=rematerialize, quiet=False
+            spec, stage, device, quiet=False
         )
     except MaterializeResolutionError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -160,11 +158,6 @@ def main() -> int:
     parser.add_argument("--stage", type=int, required=True, help="0=init only; N>=1 trains stage N using stages[N-1]")
     parser.add_argument("--device", type=str, default=None, help="cuda | cpu (default: auto)")
     parser.add_argument(
-        "--rematerialize",
-        action="store_true",
-        help="Ignore materialized HDF5 cache and rebuild train/val JEPA files for this stage",
-    )
-    parser.add_argument(
         "--skip-dashboard-metrics",
         action="store_true",
         help="Do not write dashboard profile / val move-benchmark JSON (also: JEPA_SKIP_DASHBOARD_METRICS=1)",
@@ -198,7 +191,7 @@ def main() -> int:
 
     if args.stage == 0:
         return cmd_init(spec, device)
-    return cmd_train_stage(spec, args.stage, device, rematerialize=bool(args.rematerialize))
+    return cmd_train_stage(spec, args.stage, device)
 
 
 if __name__ == "__main__":

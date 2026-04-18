@@ -25,6 +25,7 @@ import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 import h5py
 import numpy as np
@@ -82,6 +83,18 @@ class BenchmarkStats:
     mean_reciprocal_rank: float
     mean_normalized_rank: float
     mean_n_legals: float
+
+
+@dataclass
+class PositivePredStats:
+    """Median Euclidean ‖z_hat − z_pos‖ with z_pos from EMA target vs online encoder (same rows as move benchmark)."""
+
+    n_positions: int
+    n_skipped_parse: int
+    n_skipped_few_legals: int
+    n_skipped_true_not_legal: int
+    median_l2_pred_to_pos_ema: float
+    median_l2_pred_to_pos_online: float
 
 
 def _read_move_row(f: h5py.File, i: int) -> tuple[str, float, int, int, int]:
@@ -159,11 +172,41 @@ def _score_legals(
     succ_chunk: int,
 ) -> np.ndarray:
     """Return sims (L,) = negative squared L2 between z_hat and each z_target(successor)."""
+    sims, _, _ = _sims_zhat_positive_l2(
+        model,
+        board_t,
+        elo,
+        succ_stack,
+        None,
+        device,
+        use_amp=use_amp,
+        succ_chunk=succ_chunk,
+    )
+    return sims
+
+
+def _sims_zhat_positive_l2(
+    model: torch.nn.Module,
+    board_t: np.ndarray,
+    elo: float,
+    succ_stack: np.ndarray,
+    board_pos: np.ndarray | None,
+    device: torch.device,
+    *,
+    use_amp: bool,
+    succ_chunk: int,
+) -> tuple[np.ndarray, float | None, float | None]:
+    """
+    One ``forward_online`` per position, chunked ``forward_target`` on legals, optional
+    true-successor L2 ‖z_hat - z_pos‖ (EMA vs online positive encoder).
+    """
     model.eval()
     bt = torch.from_numpy(board_t).unsqueeze(0).to(device)
     elo_t = torch.tensor([elo], dtype=torch.float32, device=device)
     l_total = succ_stack.shape[0]
     sims_list: list[np.ndarray] = []
+    l2_ema: float | None = None
+    l2_on: float | None = None
 
     with torch.no_grad():
         if use_amp and device.type == "cuda":
@@ -171,7 +214,7 @@ def _score_legals(
                 _, z_hat = model.forward_online(bt, elo_t)
         else:
             _, z_hat = model.forward_online(bt, elo_t)
-        z_hat = z_hat.float()
+        z_hat_f = z_hat.float()
 
         for start in range(0, l_total, succ_chunk):
             end = min(start + succ_chunk, l_total)
@@ -182,14 +225,29 @@ def _score_legals(
             else:
                 z_t = model.forward_target(chunk)
             z_t = z_t.float()
-            zh = z_hat.expand(z_t.shape[0], -1)
+            zh = z_hat_f.expand(z_t.shape[0], -1)
             d = (z_t - zh).pow(2).sum(dim=-1)
             sims_list.append((-d).cpu().numpy())
 
-    return np.concatenate(sims_list, axis=0)
+        if board_pos is not None and hasattr(model, "encoder_online"):
+            bp = torch.from_numpy(board_pos).unsqueeze(0).to(device)
+            if use_amp and device.type == "cuda":
+                with torch.amp.autocast("cuda"):
+                    z_pos_ema = model.forward_target(bp)
+                    z_pos_on = model.encoder_online(bp)
+            else:
+                z_pos_ema = model.forward_target(bp)
+                z_pos_on = model.encoder_online(bp)
+            z_pos_ema = z_pos_ema.float().squeeze(0)
+            z_pos_on = z_pos_on.float().squeeze(0)
+            zh = z_hat_f.squeeze(0)
+            l2_ema = float(torch.sqrt((zh - z_pos_ema).pow(2).sum()).item())
+            l2_on = float(torch.sqrt((zh - z_pos_on).pow(2).sum()).item())
+
+    return np.concatenate(sims_list, axis=0), l2_ema, l2_on
 
 
-def run_benchmark_for_checkpoint(
+def run_move_and_positive_metrics_for_checkpoint(
     ckpt_path: Path,
     f: h5py.File,
     indices: np.ndarray,
@@ -199,12 +257,20 @@ def run_benchmark_for_checkpoint(
     succ_chunk: int,
     elo_bucket_width: int = ELO_BUCKET_WIDTH,
     quiet: bool = False,
-) -> tuple[BenchmarkStats, dict[int, RankMetrics]]:
-    model = load_jepa_from_checkpoint(ckpt_path, device=device)
+    load_model: Callable[[Path, torch.device], Any] | None = None,
+) -> tuple[BenchmarkStats, dict[int, RankMetrics], PositivePredStats]:
+    """Move-ranking benchmark plus median pred–positive L2 (EMA vs online positive); single model load and one pass per row."""
+    if load_model is not None:
+        model = load_model(ckpt_path, device)
+    else:
+        model = load_jepa_from_checkpoint(ckpt_path, device=device)
+    track_positive = hasattr(model, "encoder_online") and hasattr(model, "forward_target")
 
     ranks: list[int] = []
     n_legals_list: list[int] = []
     elos: list[float] = []
+    l2_ema_list: list[float] = []
+    l2_on_list: list[float] = []
     n_skipped_parse = 0
     n_skipped_few_legals = 0
     n_skipped_true_not_legal = 0
@@ -230,12 +296,16 @@ def run_benchmark_for_checkpoint(
 
         board_t = board_to_tensor(board).astype(np.float32, copy=False)
         succ_stack = np.stack([tensor_after_move(board, m) for m in legals], axis=0)
+        board_pos = (
+            tensor_after_move(board, move_true).astype(np.float32, copy=False) if track_positive else None
+        )
 
-        sims = _score_legals(
+        sims, l2_e, l2_o = _sims_zhat_positive_l2(
             model,
             board_t,
             elo,
             succ_stack,
+            board_pos,
             device,
             use_amp=use_amp,
             succ_chunk=succ_chunk,
@@ -244,10 +314,13 @@ def run_benchmark_for_checkpoint(
         ranks.append(rank)
         n_legals_list.append(len(legals))
         elos.append(float(elo))
+        if track_positive and l2_e is not None and l2_o is not None:
+            l2_ema_list.append(l2_e)
+            l2_on_list.append(l2_o)
 
     n_pos = len(ranks)
     if n_pos == 0:
-        empty = BenchmarkStats(
+        empty_b = BenchmarkStats(
             n_positions=0,
             n_skipped_parse=n_skipped_parse,
             n_skipped_few_legals=n_skipped_few_legals,
@@ -263,7 +336,15 @@ def run_benchmark_for_checkpoint(
             mean_normalized_rank=float("nan"),
             mean_n_legals=float("nan"),
         )
-        return empty, {}
+        empty_p = PositivePredStats(
+            n_positions=0,
+            n_skipped_parse=n_skipped_parse,
+            n_skipped_few_legals=n_skipped_few_legals,
+            n_skipped_true_not_legal=n_skipped_true_not_legal,
+            median_l2_pred_to_pos_ema=float("nan"),
+            median_l2_pred_to_pos_online=float("nan"),
+        )
+        return empty_b, {}, empty_p
 
     rm = _compute_rank_metrics(ranks, n_legals_list)
     by_bucket: dict[int, list[tuple[int, int]]] = defaultdict(list)
@@ -278,25 +359,69 @@ def run_benchmark_for_checkpoint(
         bn = [p[1] for p in pairs]
         bucket_metrics[b0] = _compute_rank_metrics(br, bn)
 
-    return (
-        BenchmarkStats(
-            n_positions=rm.n_positions,
+    stats = BenchmarkStats(
+        n_positions=rm.n_positions,
+        n_skipped_parse=n_skipped_parse,
+        n_skipped_few_legals=n_skipped_few_legals,
+        n_skipped_true_not_legal=n_skipped_true_not_legal,
+        top1_pct=rm.top1_pct,
+        top2_pct=rm.top2_pct,
+        top3_pct=rm.top3_pct,
+        top5_pct=rm.top5_pct,
+        top10_pct=rm.top10_pct,
+        mean_rank=rm.mean_rank,
+        median_rank=rm.median_rank,
+        mean_reciprocal_rank=rm.mean_reciprocal_rank,
+        mean_normalized_rank=rm.mean_normalized_rank,
+        mean_n_legals=rm.mean_n_legals,
+    )
+
+    if l2_ema_list:
+        med_e = float(np.median(np.asarray(l2_ema_list, dtype=np.float64)))
+        med_o = float(np.median(np.asarray(l2_on_list, dtype=np.float64)))
+        pos_stats = PositivePredStats(
+            n_positions=len(l2_ema_list),
             n_skipped_parse=n_skipped_parse,
             n_skipped_few_legals=n_skipped_few_legals,
             n_skipped_true_not_legal=n_skipped_true_not_legal,
-            top1_pct=rm.top1_pct,
-            top2_pct=rm.top2_pct,
-            top3_pct=rm.top3_pct,
-            top5_pct=rm.top5_pct,
-            top10_pct=rm.top10_pct,
-            mean_rank=rm.mean_rank,
-            median_rank=rm.median_rank,
-            mean_reciprocal_rank=rm.mean_reciprocal_rank,
-            mean_normalized_rank=rm.mean_normalized_rank,
-            mean_n_legals=rm.mean_n_legals,
-        ),
-        bucket_metrics,
+            median_l2_pred_to_pos_ema=med_e,
+            median_l2_pred_to_pos_online=med_o,
+        )
+    else:
+        pos_stats = PositivePredStats(
+            n_positions=0,
+            n_skipped_parse=n_skipped_parse,
+            n_skipped_few_legals=n_skipped_few_legals,
+            n_skipped_true_not_legal=n_skipped_true_not_legal,
+            median_l2_pred_to_pos_ema=float("nan"),
+            median_l2_pred_to_pos_online=float("nan"),
+        )
+
+    return stats, bucket_metrics, pos_stats
+
+
+def run_benchmark_for_checkpoint(
+    ckpt_path: Path,
+    f: h5py.File,
+    indices: np.ndarray,
+    device: torch.device,
+    *,
+    use_amp: bool,
+    succ_chunk: int,
+    elo_bucket_width: int = ELO_BUCKET_WIDTH,
+    quiet: bool = False,
+) -> tuple[BenchmarkStats, dict[int, RankMetrics]]:
+    stats, by_elo, _ = run_move_and_positive_metrics_for_checkpoint(
+        ckpt_path,
+        f,
+        indices,
+        device,
+        use_amp=use_amp,
+        succ_chunk=succ_chunk,
+        elo_bucket_width=elo_bucket_width,
+        quiet=quiet,
     )
+    return stats, by_elo
 
 
 def main() -> int:

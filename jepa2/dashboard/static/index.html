@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>JEPA training dashboard</title>
+  <title>jepa2 training dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     :root {
@@ -145,13 +145,13 @@
 </head>
 <body>
   <header>
-    <h1>JEPA training dashboard</h1>
-    <p>Models (saved CPU profile), move top-k on val vs train samples by stage, training curves (negatives in margin vs stage), optional live GPU benchmark, and training runner.</p>
+    <h1>jepa2 training dashboard</h1>
+    <p>Models under <code>jepa2/model_configs/</code>, per-stage metrics JSON (val/train loss after each stage), optional move benchmarks when present, forward benchmark, and <code>python -m jepa2.train</code> runner.</p>
   </header>
   <nav>
     <button type="button" class="tab-btn active" data-tab="models">Models</button>
     <button type="button" class="tab-btn" data-tab="benchmarks">Stage benchmarks</button>
-    <button type="button" class="tab-btn" data-tab="curves">Training curves</button>
+    <button type="button" class="tab-btn" data-tab="curves">Stage metrics</button>
     <button type="button" class="tab-btn" data-tab="run">Run training</button>
   </nav>
   <main>
@@ -230,14 +230,14 @@
       <div class="panel">
         <label>
           Models
-          <select id="curves-models" multiple aria-label="Models for training curves"></select>
+          <select id="curves-models" multiple aria-label="Models for stage metrics"></select>
         </label>
         <button type="button" class="primary" id="btn-load-curves" style="margin-left:1rem;vertical-align:top;">Load</button>
         <p id="curves-hint" style="color:var(--muted);font-size:0.85rem;margin-top:0.75rem;">
-          Hold <kbd>Ctrl</kbd> or <kbd>⌘</kbd> and click to select multiple models. X-axis is <strong>training stage</strong> (S1…); each point uses the <strong>last epoch</strong> of that stage&apos;s JSONL. Solid = val, dashed = train, same color per model. Metric: mean count of sampled negatives with <code>d_neg &lt; d_pos + margin</code>.
+          Hold <kbd>Ctrl</kbd> or <kbd>⌘</kbd> and click to select multiple models. X-axis is <strong>training stage</strong> (S1…). Each point is one row from <code>metrics/&lt;name&gt;_stage_N_metrics.json</code> (inference pass after that stage). Solid = val loss, dashed = train loss, same color per model.
         </p>
         <div class="panel bench-metric" style="margin-top:1rem;margin-bottom:0;">
-          <h3>Mean negatives within margin (by stage)</h3>
+          <h3>Val vs train loss (by stage)</h3>
           <div class="bench-chart-wrap"><canvas id="curves-chart-margin"></canvas></div>
         </div>
       </div>
@@ -314,7 +314,7 @@
             min: 0,
             ticks: { color: "#8b9cb3" },
             grid: { color: "#2a3544" },
-            title: { display: true, text: "mean count (of K negatives)", color: "#8b9cb3" },
+            title: { display: true, text: "loss (inference pass)", color: "#8b9cb3" },
           },
         },
       };
@@ -344,7 +344,7 @@
       const resp = await fetch("/api/models");
       const rows = await resp.json();
       if (!resp.ok) throw new Error(resp.statusText);
-      $("models-status").textContent = rows.length ? "" : "No YAML specs in jepa/model_configs.";
+      $("models-status").textContent = rows.length ? "" : "No YAML specs in jepa2/model_configs.";
       const tb = $("models-table").querySelector("tbody");
       tb.innerHTML = "";
       const benchModel = $("bench-model");
@@ -547,7 +547,7 @@
       const hintEl = $("curves-hint");
       if (!selected.length) {
         hintEl.textContent =
-          "Select one or more models (Ctrl/⌘+click), then Load. X-axis is training stage; each point is the last epoch of that stage.";
+          "Select one or more models (Ctrl/⌘+click), then Load. X-axis is training stage; each point is the per-stage metrics JSON for that stage.";
         destroyCurvesChart();
         return;
       }
@@ -628,8 +628,8 @@
           const data = pack || { epochs: [], metrics_path: null };
           if (data.metrics_path && pathsSeen.indexOf(data.metrics_path) < 0) pathsSeen.push(data.metrics_path);
           const last = lastRow(data.epochs);
-          const vVal = numField(last, "val_mean_n_neg_within_margin");
-          const vTr = numField(last, "train_mean_n_neg_within_margin");
+          const vVal = numField(last, "val_loss");
+          const vTr = numField(last, "train_loss");
           valPts.push(vVal);
           trPts.push(vTr);
           if (vVal != null || vTr != null) anyData = true;
@@ -659,13 +659,13 @@
 
       if (!anyData) {
         hintEl.textContent =
-          "No epoch JSONL with train_mean_n_neg_within_margin / val_mean_n_neg_within_margin for these stages (older runs or stages not trained yet)." +
+          "No per-stage metrics JSON (val_loss / train_loss) for these stages. Train with jepa2 or run python -m jepa2.scripts.refresh_stage_metrics." +
           (pathsSeen.length ? " Example: " + pathsSeen[0] : "");
         return;
       }
 
       hintEl.textContent =
-        "Last epoch per training stage · stages " +
+        "Per-stage metrics JSON · stages " +
         labels.join(", ") +
         (pathsSeen.length ? " · " + pathsSeen.slice(0, 3).join("; ") : "");
 

@@ -20,6 +20,7 @@ embedding/data/
 embedding/artifacts/
 checkpoints/
 jepa_checkpoints/
+jepa2_checkpoints/
 move_predictor_checkpoints/
 
 # IDE / editor
