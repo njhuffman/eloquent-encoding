@@ -1,0 +1,377 @@
+name: j3_beta
+checkpoint_dir: jepa3_checkpoints/j3_beta
+train_move_dataset_h5: databases/moves/training_moves_1M.h5
+val_move_dataset_h5: databases/moves/validation_moves_1M.h5
+
+val_sample:
+  n: 10000
+  seed: 42
+
+dashboard_metrics:
+  move_benchmark_sample_n: 2048
+  move_benchmark_seed: 42
+  move_benchmark_train_seed: 1000045
+  move_benchmark_succ_chunk: 256
+  device: auto
+
+defaults:
+  batch_size: 1024
+  dataloader_num_workers: 4
+  log_interval: 1
+  use_amp: true
+  weight_decay: 0.01
+  train_shuffle_seed: 7
+  gsnr_probe_every_opt_steps: 0
+  sam_rho: 0.0
+  from_sq_unknown_probability: 0.0
+  probe_board_recon_weight: 0.05
+  probe_meta_weight: 0.025
+
+architecture:
+  id: chess_jepa_v4
+  config:
+    d_model: 256
+    encoder_layers: 4
+    nhead: 8
+    dim_feedforward: 1024
+    dropout: 0.0
+    use_cls: false
+    predictor_prefix_dims: 64
+    jepa_square_embed_dim: 64
+    predictor_hidden: 256
+    predictor_depth: 2
+    from_to_head_hidden: 512
+    from_to_head_depth: 2
+    probe_board_recon_hidden: 512
+    probe_meta_hidden: 256
+
+stages:
+  - sample:
+      n: 131072
+      seed: 1
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 1
+      learning_rate: 0.00005
+      weight_decay: 0.01
+    ema_momentum: 0.99
+    jepa_weight: 1.0
+    from_sq_ce_weight: 0.0
+    to_sq_ce_weight: 0.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 1.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+  - sample:
+      n: 131072
+      seed: 1
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 1
+      learning_rate: 0.00005
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 0.0
+    to_sq_ce_weight: 0.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 1.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 1.0
+  - sample:
+      n: 131072
+      seed: 1
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 8
+      learning_rate: 0.00005
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 0.0
+    to_sq_ce_weight: 0.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 1.0
+  - sample:
+      n: 131072
+      seed: 1
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 8
+      learning_rate: 0.00005
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 0.1
+    to_sq_ce_weight: 0.1
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 1.0
+  - sample:
+      n: 131072
+      seed: 1
+    train:
+      epochs: 4
+      gradient_accumulation_steps: 8
+      learning_rate: 0.00005
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 0.5
+    to_sq_ce_weight: 0.5
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 1.0
+  - sample:
+      n: 131072
+      seed: 1
+    train:
+      epochs: 10
+      gradient_accumulation_steps: 8
+      learning_rate: 0.0005
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 1.0
+    to_sq_ce_weight: 1.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 1.0
+  - sample:
+      n: 8196
+      seed: 1
+    train:
+      epochs: 50
+      gradient_accumulation_steps: 8
+      learning_rate: 0.00005
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 1.0
+    to_sq_ce_weight: 1.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+  - sample:
+      n: 8196
+      seed: 1
+    train:
+      epochs: 50
+      gradient_accumulation_steps: 8
+      learning_rate: 0.0002
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 1.0
+    to_sq_ce_weight: 1.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+  - sample:
+      n: 8196
+      seed: 1
+    train:
+      epochs: 100
+      gradient_accumulation_steps: 8
+      learning_rate: 0.0002
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 20.0
+    to_sq_ce_weight: 2.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+  - sample:
+      n: 8196
+      seed: 1
+    train:
+      epochs: 100
+      gradient_accumulation_steps: 4
+      learning_rate: 0.0002
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 20.0
+    to_sq_ce_weight: 2.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+  - sample:
+      n: 8196
+      seed: 1
+    train:
+      epochs: 250
+      gradient_accumulation_steps: 2
+      learning_rate: 0.0001
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 20.0
+    to_sq_ce_weight: 2.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+  - sample:
+      n: 16392
+      seed: 1
+    train:
+      epochs: 250
+      gradient_accumulation_steps: 2
+      learning_rate: 0.0001
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 20.0
+    to_sq_ce_weight: 2.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+    early_stop_joint_top1: 0.4
+  - sample:
+      n: 32784
+      seed: 1
+    train:
+      epochs: 250
+      gradient_accumulation_steps: 2
+      learning_rate: 0.0001
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 20.0
+    to_sq_ce_weight: 2.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+    early_stop_joint_top1: 0.4
+  - sample:
+      n: 65536
+      seed: 1
+    train:
+      epochs: 250
+      gradient_accumulation_steps: 2
+      learning_rate: 0.0001
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 20.0
+    to_sq_ce_weight: 2.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+    early_stop_joint_top1: 0.4
+  - sample:
+      n: 131072
+      seed: 1
+    train:
+      epochs: 250
+      gradient_accumulation_steps: 2
+      learning_rate: 0.0001
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 20.0
+    to_sq_ce_weight: 2.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+    early_stop_joint_top1: 0.45
+  - sample:
+      n: 262144
+      seed: 1
+    train:
+      epochs: 250
+      gradient_accumulation_steps: 2
+      learning_rate: 0.0001
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 20.0
+    to_sq_ce_weight: 2.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+    early_stop_joint_top1: 0.4
+  - sample:
+      n: 524288
+      seed: 1
+    train:
+      epochs: 250
+      gradient_accumulation_steps: 2
+      learning_rate: 0.0001
+      weight_decay: 0.01
+    ema_momentum: 0.99999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 20.0
+    to_sq_ce_weight: 2.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 5.0
+      var_coef: 10.0
+      cov_coef: 10.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.0
+    early_stop_joint_top1: 0.4

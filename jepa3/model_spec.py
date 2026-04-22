@@ -1,4 +1,23 @@
-"""YAML model spec for jepa2: defaults + per-stage deep merge (no materialized negatives)."""
+"""YAML model spec for jepa3: defaults + per-stage deep merge.
+
+Loss coefficients (jepa_weight, CE weights, label smoothing, vicreg) and target
+``ema_momentum`` must be set on each ``stages[i]``; they are not read from ``defaults:``
+and have no built-in defaults.
+
+``move_head_prefix_leak`` (float in ``[0, 1]``) may be set in ``defaults`` and/or overridden
+per stage: λ=0 gives no CE gradient into the first ``predictor_prefix_dims`` encoder channels
+for the from/to heads; λ=1 is full CE gradient there; values in between interpolate (same
+semantics for ``chess_jepa_v3`` and ``chess_jepa_v4``). Optional architecture
+``move_head_prefix_leak`` is only the checkpoint default when inference calls omit an
+explicit λ.
+
+Optional probe weights ``probe_board_recon_weight`` and ``probe_meta_weight`` may be set in
+``defaults`` and/or per stage (default ``0.0`` = probes not computed for v4).
+
+Optional ``early_stop_joint_top1`` in ``(0, 1]``: stop training when
+``(train_from_sq_top1/100) * (train_to_sq_top1/100)`` exceeds that value (epoch mean over
+training batches, same as logged train top1 metrics).
+"""
 
 from __future__ import annotations
 
@@ -10,11 +29,56 @@ from typing import Any
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-MODEL_CONFIGS_DIR = _REPO_ROOT / "jepa2" / "model_configs"
+MODEL_CONFIGS_DIR = _REPO_ROOT / "jepa3" / "model_configs"
+
+# Loss scaling / VICReg coefficients must appear on each stages[i], not under defaults.
+_STAGE_REQUIRED_LOSS_SCALARS = (
+    "jepa_weight",
+    "from_sq_ce_weight",
+    "to_sq_ce_weight",
+    "sq_ce_label_smoothing",
+)
+_VICREG_REQUIRED_KEYS = ("inv_coef", "var_coef", "cov_coef", "std_target")
+_DEFAULTS_FORBIDDEN_STAGE_KEYS = (*_STAGE_REQUIRED_LOSS_SCALARS, "vicreg", "ema_momentum")
+
+
+def _forbid_stage_scoped_keys_in_yaml_defaults(defaults: Any) -> None:
+    if not isinstance(defaults, dict):
+        return
+    bad = [k for k in _DEFAULTS_FORBIDDEN_STAGE_KEYS if k in defaults]
+    if bad:
+        raise ValueError(
+            "defaults must not set stage-scoped training keys "
+            f"({', '.join(bad)}). "
+            "Set jepa_weight, from_sq_ce_weight, to_sq_ce_weight, sq_ce_label_smoothing, "
+            "vicreg (inv_coef, var_coef, cov_coef, std_target), and ema_momentum on each stages[i]."
+        )
+
+
+def _require_stage_loss_and_ema(stage: dict[str, Any], index: int) -> None:
+    if "ema_momentum" not in stage:
+        raise KeyError(
+            f"stages[{index}] must set 'ema_momentum' (target EMA; required per stage, not in defaults)"
+        )
+    for k in _STAGE_REQUIRED_LOSS_SCALARS:
+        if k not in stage:
+            raise KeyError(
+                f"stages[{index}] must set {k!r} (loss coefficients are required per stage, not in defaults)"
+            )
+    vr = stage.get("vicreg")
+    if not isinstance(vr, dict):
+        raise KeyError(
+            f"stages[{index}].vicreg must be a mapping with "
+            f"{', '.join(_VICREG_REQUIRED_KEYS)} (required per stage)"
+        )
+    for vk in _VICREG_REQUIRED_KEYS:
+        if vk not in vr:
+            raise KeyError(
+                f"stages[{index}].vicreg must set {vk!r} (required per stage, no defaults)"
+            )
 
 
 def _reject_legacy_mse_played_weight(raw: dict[str, Any]) -> None:
-    """``mse_played_weight`` was removed; use ``vicreg.inv_coef`` for the same (z_hat-z_pos)^2 term."""
     locs: list[str] = []
 
     def walk(obj: Any, prefix: str) -> None:
@@ -30,8 +94,8 @@ def _reject_legacy_mse_played_weight(raw: dict[str, Any]) -> None:
     walk(raw, "")
     if locs:
         raise ValueError(
-            "jepa2 model spec must not contain 'mse_played_weight'. "
-            "Remove it and set vicreg.inv_coef instead (same meaning as the former MSE weight). "
+            "jepa3 model spec must not contain 'mse_played_weight'. "
+            "Use vicreg.inv_coef instead. "
             f"Found at: {', '.join(sorted(set(locs)))}"
         )
 
@@ -47,31 +111,25 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 DEFAULTS: dict[str, Any] = {
-    "ema_momentum": 0.999,
-    "M_train": 64,
-    "M_eval": 64,
-    "ce_weight": 1.0,
-    "ce_label_smoothing": 0.0,
-    "ce_temperature": 1.0,
     "from_sq_unknown_probability": 0.0,
     "batch_size": 256,
     "gradient_accumulation_steps": 1,
     "weight_decay": 0.05,
     "dataloader_num_workers": 0,
     "log_interval": 100,
+    "train_log_mode": "compact",
+    "max_gradient_norm": 0.0,
+    "log_gradient_norms": True,
+    "move_head_prefix_leak": 0.0,
+    "early_stop_joint_top1": None,
     "gsnr_probe_k": 8,
-    "gsnr_probe_every_opt_steps": 8,
+    "gsnr_probe_every_opt_steps": 0,
     "sam_rho": 0.0,
     "use_amp": True,
-    "vicreg": {
-        "inv_coef": 0.1,
-        "var_coef": 0.1,
-        "cov_coef": 0.0,
-        "std_target": 1.0,
-        "succ_var_coef": 0.0,
-        "succ_cov_coef": 0.0,
-    },
     "val_legal_seed": 42,
+    "train_shuffle_seed": 0,
+    "probe_board_recon_weight": 0.0,
+    "probe_meta_weight": 0.0,
 }
 
 
@@ -109,11 +167,12 @@ def load_model_spec(path: Path) -> dict[str, Any]:
 
     ckpt = raw.get("checkpoint_dir")
     if not ckpt:
-        raw["checkpoint_dir"] = str((_REPO_ROOT / "jepa2_checkpoints" / name).resolve())
+        raw["checkpoint_dir"] = str((_REPO_ROOT / "jepa3_checkpoints" / name).resolve())
     else:
         p = Path(ckpt)
         raw["checkpoint_dir"] = str(p.expanduser().resolve() if p.is_absolute() else (_REPO_ROOT / p).resolve())
 
+    _forbid_stage_scoped_keys_in_yaml_defaults(raw.get("defaults"))
     merged_defaults = _deep_merge(copy.deepcopy(DEFAULTS), raw.get("defaults") or {})
     raw["defaults"] = merged_defaults
 
@@ -162,15 +221,12 @@ def load_model_spec(path: Path) -> dict[str, Any]:
             raise ValueError(f"stages[{i}].train.gradient_accumulation_steps must be >= 1 (got {gas})")
         tr["gradient_accumulation_steps"] = gas
 
+        _require_stage_loss_and_ema(st, i)
+
     return raw
 
 
 def resolve_training_config_for_stage(spec: dict[str, Any], stage_index: int) -> dict[str, Any]:
-    """
-    Merge ``spec["defaults"]`` with ``spec["stages"][stage_index]`` top-level keys
-    (excluding sample/train), then attach merged ``train`` from the stage.
-    ``stage_index`` is 0-based (``stages[0]`` is training stage 1).
-    """
     if stage_index < 0 or stage_index >= len(spec["stages"]):
         raise IndexError(f"stage_index {stage_index} out of range for stages")
     base = copy.deepcopy(spec["defaults"])
@@ -190,26 +246,38 @@ def resolve_training_config_for_stage(spec: dict[str, Any], stage_index: int) ->
     _gas = int(merged["train"]["gradient_accumulation_steps"])
     if _gas < 1:
         raise ValueError(f"train.gradient_accumulation_steps must be >= 1 (got {_gas})")
-    ct = float(merged.get("ce_temperature", 1.0))
-    if not math.isfinite(ct) or ct <= 0.0:
-        raise ValueError(f"ce_temperature must be finite and > 0 (got {merged.get('ce_temperature')!r})")
+
+    for wkey in ("jepa_weight", "from_sq_ce_weight", "to_sq_ce_weight"):
+        wv = float(merged[wkey])
+        if not math.isfinite(wv) or wv < 0.0:
+            raise ValueError(f"{wkey} must be finite and >= 0 (got {merged[wkey]!r})")
+
+    sm = float(merged["sq_ce_label_smoothing"])
+    if not math.isfinite(sm) or sm < 0.0 or sm > 1.0:
+        raise ValueError(f"sq_ce_label_smoothing must be in [0, 1] (got {merged['sq_ce_label_smoothing']!r})")
+
     p_unk = float(merged.get("from_sq_unknown_probability", 0.0))
     if not math.isfinite(p_unk) or p_unk < 0.0 or p_unk > 1.0:
         raise ValueError(
             "from_sq_unknown_probability must be finite and in [0, 1] "
             f"(got {merged.get('from_sq_unknown_probability')!r})"
         )
-    vr = merged.get("vicreg")
-    if isinstance(vr, dict):
-        for key in ("succ_var_coef", "succ_cov_coef"):
-            if key in vr:
-                v = float(vr[key])
-                if not math.isfinite(v) or v < 0.0:
-                    raise ValueError(f"vicreg.{key} must be finite and >= 0 (got {vr[key]!r})")
-        if "succ_std_target" in vr:
-            st = float(vr["succ_std_target"])
-            if not math.isfinite(st) or st <= 0.0:
-                raise ValueError(f"vicreg.succ_std_target must be finite and > 0 (got {vr['succ_std_target']!r})")
+
+    vr = merged["vicreg"]
+    if not isinstance(vr, dict):
+        raise TypeError("vicreg must be a mapping")
+    for key in ("inv_coef", "var_coef", "cov_coef"):
+        v = float(vr[key])
+        if not math.isfinite(v) or v < 0.0:
+            raise ValueError(f"vicreg.{key} must be finite and >= 0 (got {vr[key]!r})")
+    stt = float(vr["std_target"])
+    if not math.isfinite(stt) or stt <= 0.0:
+        raise ValueError(f"vicreg.std_target must be finite and > 0 (got {vr['std_target']!r})")
+
+    ema_m = float(merged["ema_momentum"])
+    if not math.isfinite(ema_m) or ema_m < 0.0 or ema_m > 1.0:
+        raise ValueError(f"ema_momentum must be finite and in [0, 1] (got {merged['ema_momentum']!r})")
+
     gk = int(merged.get("gsnr_probe_k", 8))
     ge = int(merged.get("gsnr_probe_every_opt_steps", 0))
     if ge < 0:
@@ -221,12 +289,53 @@ def resolve_training_config_for_stage(spec: dict[str, Any], stage_index: int) ->
         if gk > ge * max(gas, 1):
             raise ValueError(
                 "gsnr_probe_k should not exceed gsnr_probe_every_opt_steps * "
-                f"gradient_accumulation_steps (rough budget: amortized extra work); got k={gk}, "
-                f"every={ge}, accum={gas}"
+                f"gradient_accumulation_steps; got k={gk}, every={ge}, accum={gas}"
             )
     sam_rho = float(merged.get("sam_rho", 0.0))
     if not math.isfinite(sam_rho) or sam_rho < 0.0:
         raise ValueError(f"sam_rho must be finite and >= 0 (got {merged.get('sam_rho')!r})")
+    tlm = merged.get("train_log_mode", "compact")
+    if tlm not in ("compact", "full"):
+        raise ValueError(f'train_log_mode must be "compact" or "full" (got {tlm!r})')
+    merged["train_log_mode"] = str(tlm)
+
+    raw_mgn = merged.get("max_gradient_norm", 0.0)
+    if raw_mgn is None:
+        mgn = 0.0
+    else:
+        mgn = float(raw_mgn)
+    if not math.isfinite(mgn) or mgn < 0.0:
+        raise ValueError(f"max_gradient_norm must be finite and >= 0 (got {raw_mgn!r})")
+    merged["max_gradient_norm"] = mgn
+
+    lgn = merged.get("log_gradient_norms", True)
+    if not isinstance(lgn, bool):
+        raise ValueError(f"log_gradient_norms must be a bool (got {lgn!r})")
+    merged["log_gradient_norms"] = bool(lgn)
+
+    lam = float(merged.get("move_head_prefix_leak", 0.0))
+    if not math.isfinite(lam) or lam < 0.0 or lam > 1.0:
+        raise ValueError(f"move_head_prefix_leak must be finite and in [0, 1] (got {merged.get('move_head_prefix_leak')!r})")
+    merged["move_head_prefix_leak"] = lam
+
+    for pw in ("probe_board_recon_weight", "probe_meta_weight"):
+        wv = float(merged.get(pw, 0.0))
+        if not math.isfinite(wv) or wv < 0.0:
+            raise ValueError(f"{pw} must be finite and >= 0 (got {merged.get(pw)!r})")
+        merged[pw] = wv
+
+    raw_es = merged.get("early_stop_joint_top1")
+    if raw_es is None:
+        merged["early_stop_joint_top1"] = None
+    else:
+        x = float(raw_es)
+        if not math.isfinite(x) or x <= 0.0 or x > 1.0:
+            raise ValueError(
+                "early_stop_joint_top1 must be in (0, 1] when set "
+                f"(train_from_sq_top1/100 * train_to_sq_top1/100 must exceed this to stop; got {raw_es!r})"
+            )
+        merged["early_stop_joint_top1"] = x
+
     return merged
 
 
@@ -235,4 +344,4 @@ def spec_path_for_model(model_name: str) -> Path:
         p = MODEL_CONFIGS_DIR / f"{model_name}{ext}"
         if p.is_file():
             return p
-    raise FileNotFoundError(f"No jepa2 spec at {MODEL_CONFIGS_DIR / (model_name + '.yaml')}")
+    raise FileNotFoundError(f"No jepa3 spec at {MODEL_CONFIGS_DIR / (model_name + '.yaml')}")

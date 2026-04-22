@@ -194,7 +194,13 @@ class ChessJEPA(nn.Module):
         for p_t, p_o in zip(self.encoder_target.parameters(), self.encoder_online.parameters(), strict=True):
             p_t.data.mul_(m).add_(p_o.data, alpha=1.0 - m)
 
-    def forward_online(self, board_t: torch.Tensor, elo: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward_online(
+        self,
+        board_t: torch.Tensor,
+        elo: torch.Tensor,
+        from_sq: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del from_sq  # v1 predictor is Elo-only; optional for shared benchmark API
         z_online = self.encoder_online(board_t)
         z_hat = self.predictor(z_online, elo)
         return z_online, z_hat

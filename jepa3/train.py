@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-jepa2 training: streaming move HDF5, uniform legal subsampling, CE + VICReg.
+jepa3 training: streaming move HDF5, JEPA+VICReg + from/to square CE.
 
-  python -m jepa2.train --model NAME --stage 0     # init -> NAME_stage_0.pt
-  python -m jepa2.train --model NAME --stage 1     # load stage_0, train stage 1 using stages[0]
-
-Per-stage metrics are written once to ``metrics/{name}_stage_{N}_metrics.json`` (no per-epoch JSONL).
+  python -m jepa3.train --model NAME --stage 0     # init -> NAME_stage_0.pt
+  python -m jepa3.train --model NAME --stage 1     # load stage_0, train stage 1 using stages[0]
 """
 
 from __future__ import annotations
@@ -27,12 +25,12 @@ apply_hdf5_read_safety_env()
 import h5py
 import torch
 
-from jepa2.checkpoint_paths import stage_checkpoint_path
 from jepa2.dataset import make_loader, sample_row_indices
-from jepa2.metrics_paths import stage_metrics_json_path
-from jepa2.model_spec import load_model_spec, resolve_training_config_for_stage, spec_path_for_model
-from jepa2.training_loop import init_stage_zero, run_training_epochs, save_stage_checkpoint, write_stage_metrics_json
-from jepa2.load import load_jepa2_from_checkpoint
+from jepa3.checkpoint_paths import stage_checkpoint_path
+from jepa3.load import load_jepa3_from_checkpoint
+from jepa3.metrics_paths import stage_metrics_json_path
+from jepa3.model_spec import load_model_spec, resolve_training_config_for_stage, spec_path_for_model
+from jepa3.training_loop import init_stage_zero, run_training_epochs, save_stage_checkpoint, write_stage_metrics_json
 
 
 def _h5_n_rows(path: Path) -> int:
@@ -58,7 +56,7 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
 
     st_idx = stage - 1
     resolved = resolve_training_config_for_stage(spec, st_idx)
-    print("jepa2 resolved training config:", json.dumps(resolved, default=str, indent=2), file=sys.stderr)
+    print("jepa3 resolved training config:", json.dumps(resolved, default=str, indent=2), file=sys.stderr)
 
     ckpt_dir = Path(spec["checkpoint_dir"])
     prev_path = stage_checkpoint_path(ckpt_dir, name, stage - 1)
@@ -94,10 +92,10 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
         seed=None,
     )
 
-    model = load_jepa2_from_checkpoint(prev_path, device=device)
+    model = load_jepa3_from_checkpoint(prev_path, device=device)
 
     run_meta = {"model": name, "stage": stage}
-    best_val, best_ep, last_inf, last_train_loss, last_avg_train = run_training_epochs(
+    best_val, best_ep, last_inf, last_train_loss, last_avg_train, epochs_ran, early_stopped = run_training_epochs(
         model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -108,6 +106,7 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
     )
 
     metrics_path = stage_metrics_json_path(ckpt_dir, name, stage)
+    sched_epochs = int(resolved["train"]["epochs"])
     record: dict = {
         "source": "training",
         "model": name,
@@ -115,13 +114,20 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "best_val_loss": best_val,
         "best_epoch": best_ep,
-        "epochs_ran": int(resolved["train"]["epochs"]),
+        "epochs_ran": epochs_ran,
+        "train_epochs_scheduled": sched_epochs,
+        "early_stopped": early_stopped,
         "train_epoch_mean_loss_last": last_train_loss,
-        "ce_weight": float(resolved["ce_weight"]),
+        "jepa_weight": float(resolved["jepa_weight"]),
+        "from_sq_ce_weight": float(resolved["from_sq_ce_weight"]),
+        "to_sq_ce_weight": float(resolved["to_sq_ce_weight"]),
         "vicreg": dict(resolved["vicreg"]),
         "metrics_path": str(metrics_path),
         "run": run_meta,
     }
+    est = resolved.get("early_stop_joint_top1")
+    if est is not None:
+        record["early_stop_joint_top1_threshold"] = float(est)
     for k, v in last_avg_train.items():
         record[f"train_epoch_mean_{k}"] = v
     record.update(last_inf)
@@ -143,7 +149,7 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
         },
         best_val=best_val,
         best_ep=best_ep,
-        epochs_ran=int(resolved["train"]["epochs"]),
+        epochs_ran=epochs_ran,
     )
     print(f"Saved {out_path} (best_val={best_val:.4f} @ ep {best_ep})", file=sys.stderr)
     print(f"Stage metrics: {metrics_written}", file=sys.stderr)
@@ -151,8 +157,8 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="jepa2 staged training (streaming legals).")
-    parser.add_argument("--model", type=str, required=True, help="Model name (jepa2/model_configs/{name}.yaml)")
+    parser = argparse.ArgumentParser(description="jepa3 staged training (multi-head).")
+    parser.add_argument("--model", type=str, required=True, help="Model name (jepa3/model_configs/{name}.yaml)")
     parser.add_argument("--stage", type=int, required=True, help="0=init; N>=1 trains stage N using stages[N-1]")
     parser.add_argument("--device", type=str, default=None, help="cuda | cpu (default: auto)")
     args = parser.parse_args()

@@ -1,0 +1,108 @@
+name: bakeoff_jepa_y_fast
+# Repo-local checkpoints/metrics (writable in devcontainer). To reuse weights from bulk ``jepa_y``, copy ``*_stage_*.pt`` here or chown the bulk ``metrics/`` dir.
+checkpoint_dir: jepa2_checkpoints/bakeoff_jepa_y_fast
+train_move_dataset_h5: databases/moves/training_moves_1M.h5
+val_move_dataset_h5: databases/moves/validation_moves_1M.h5
+
+val_sample:
+  n: 10000
+  seed: 42
+
+defaults:
+  ema_momentum: 0.9999
+  batch_size: 128
+  dataloader_num_workers: 4
+  log_interval: 1
+  use_amp: true
+  weight_decay: 0.01
+
+  M_train: 32
+  M_eval: 32
+  ce_weight: 0.02
+  ce_label_smoothing: 0.2
+  train_shuffle_seed: 7
+  vicreg:
+    inv_coef: 1.0
+    var_coef: 1.0
+    cov_coef: 1.0
+    std_target: 1.0
+
+architecture:
+  id: chess_jepa_v2
+  config:
+    d_model: 256
+    encoder_layers: 4
+    predictor_layers: 2
+    nhead: 8
+    dim_feedforward: 1024
+    dropout: 0.0
+    use_cls: true
+    elo_scale: 3000.0
+
+# jepa_y stage 1 only for now (same sample/train hyperparameters as the original first stage).
+stages:
+  - sample:
+      n: 100000
+      seed: 1
+    train:
+      epochs: 1
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 2
+    # vic reg: var_coef=20.0, cov_coef=50.0, inv_coef=0.1, ce_weight=0.1
+    train:
+      epochs: 1
+      learning_rate: 0.00002
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 3
+    # vic reg: var_coef=20.0, cov_coef=50.0, inv_coef=0.3, ce_weight=0.3
+    train:
+      epochs: 1
+      learning_rate: 0.00002
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 4
+    # vic reg: var_coef=10.0, cov_coef=25.0, inv_coef=1.0, ce_weight=1.0
+    train:
+      epochs: 1
+      learning_rate: 0.00002
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 5
+    # vic reg: var_coef=1.0, cov_coef=1.0, inv_coef=1.0, ce_weight=1.0
+    train:
+      epochs: 1
+      learning_rate: 0.000005
+      weight_decay: 0.01
+  - sample:
+      n: 100000
+      seed: 6
+    # reference: vic reg: var_coef=1.0, cov_coef=1.0, inv_coef=1.0, ce_weight=0.0, ema_momentum=1.0. Got to 0.13 vic_inv, 0.05 cov
+    # reference: vic reg: var_coef=1.0, cov_coef=1.0, inv_coef=1.0, ce_weight=0.0, ema_momentum=0.9999. Also got to 0.137 vic_inv, 0.05 cov
+    # vic reg: var_coef=1.0, cov_coef=1.0, inv_coef=1.0, ce_weight=0.01, ema_momentum=0.9999
+    train:
+      epochs: 1
+      learning_rate: 0.000005
+      weight_decay: 0.01
+  - sample:
+      n: 25600
+      seed: 7
+    # vic reg: var_coef=1.0, cov_coef=1.0, inv_coef=1.0, ce_weight=0.02, ema_momentum=0.9999
+    train:
+      epochs: 1
+      learning_rate: 0.000005
+      weight_decay: 0.01
+  - sample:
+      n: 2560
+      seed: 8
+    # vic reg: var_coef=1.0, cov_coef=1.0, inv_coef=1.0, ce_weight=0.02, ema_momentum=0.9999, smoothing=0.2
+    train:
+      epochs: 1
+      learning_rate: 0.000002
+      weight_decay: 0.01

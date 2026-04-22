@@ -1,56 +1,31 @@
 """
-Chess-JEPA v2 (jepa2): same backbone as v1 — spatial-token encoder, EMA target twin, Elo-conditioned predictor.
-Loss lives in ``jepa2.loss`` (CE + MSE + VICReg), not triplet.
+Chess-JEPA v2 with final encoder LayerNorm and from-square-conditioned predictor.
+
+Predictor fuses ``z_online`` with Elo and a ``nn.Embedding(65, d_model)`` over
+``from_sq`` indices ``0..63`` (squares) and ``64`` (unknown / unspecified).
+Separate ``architecture_id`` for checkpoint lineage.
 """
 
 from __future__ import annotations
 
 import copy
-import warnings
 from typing import Any
 
 import torch
 import torch.nn as nn
 
+from jepa2.architectures.chess_jepa_v2 import resolve_architecture_config
 from jepa2.config import BOARD_CHANNELS, BOARD_HEIGHT, BOARD_WIDTH
 
-ARCHITECTURE_ID = "chess_jepa_v2"
+ARCHITECTURE_ID = "chess_jepa_v2_fromsq_ln"
 
-DEFAULT_ARCHITECTURE_CONFIG: dict[str, Any] = {
-    "d_model": 256,
-    "encoder_layers": 4,
-    "predictor_layers": 2,
-    "nhead": 8,
-    "dim_feedforward": 1024,
-    "dropout": 0.1,
-    "use_cls": True,
-    "elo_scale": 3000.0,
-}
-
-
-def resolve_architecture_config(user: dict[str, Any] | None) -> dict[str, Any]:
-    cfg = {**DEFAULT_ARCHITECTURE_CONFIG, **(user or {})}
-    if cfg.pop("num_negatives_k", None) is not None:
-        warnings.warn(
-            "architecture.config num_negatives_k is ignored for jepa2; use M_train / M_eval in spec defaults.",
-            UserWarning,
-            stacklevel=2,
-        )
-    cfg["d_model"] = int(cfg["d_model"])
-    cfg["encoder_layers"] = int(cfg["encoder_layers"])
-    cfg["predictor_layers"] = int(cfg["predictor_layers"])
-    cfg["nhead"] = int(cfg["nhead"])
-    cfg["dim_feedforward"] = int(cfg["dim_feedforward"])
-    cfg["dropout"] = float(cfg["dropout"])
-    cfg["use_cls"] = bool(cfg["use_cls"])
-    cfg["elo_scale"] = float(cfg["elo_scale"])
-    if cfg["d_model"] % cfg["nhead"] != 0:
-        raise ValueError("d_model must be divisible by nhead")
-    return cfg
+# ``from_sq`` indices 0..63 match board squares; 64 is reserved for unknown (no side info).
+UNKNOWN_FROM_SQ = 64
+_NUM_FROM_SQ = 65
 
 
 class BoardEncoder(nn.Module):
-    """64 square tokens (+ optional CLS), TransformerEncoder, raw d_model latent."""
+    """Transformer board encoder + ``LayerNorm(d_model)`` on pooled (B, D)."""
 
     def __init__(
         self,
@@ -92,6 +67,7 @@ class BoardEncoder(nn.Module):
                 norm_first=True,
             )
             self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+        self.out_ln = nn.LayerNorm(d_model)
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
         if use_cls:
             nn.init.trunc_normal_(self.cls_token, std=0.02)
@@ -108,11 +84,11 @@ class BoardEncoder(nn.Module):
             out = x[:, 0, :]
         else:
             out = x.mean(dim=1)
-        return out
+        return self.out_ln(out)
 
 
 class PredictorHead(nn.Module):
-    """Elo-conditioned 2-layer Transformer on a single token; raw d_model output."""
+    """Elo + from-square embeddings, small Transformer, ``LayerNorm`` on output."""
 
     def __init__(
         self,
@@ -127,6 +103,7 @@ class PredictorHead(nn.Module):
         super().__init__()
         self.elo_scale = elo_scale
         self.elo_proj = nn.Linear(1, d_model)
+        self.from_sq_emb = nn.Embedding(_NUM_FROM_SQ, d_model)
         enc_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -137,14 +114,16 @@ class PredictorHead(nn.Module):
             norm_first=True,
         )
         self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+        self.out_ln = nn.LayerNorm(d_model)
 
-    def forward(self, z_online: torch.Tensor, elo: torch.Tensor) -> torch.Tensor:
+    def forward(self, z_online: torch.Tensor, elo: torch.Tensor, from_sq_idx: torch.Tensor) -> torch.Tensor:
         e = (elo.float().unsqueeze(-1) / self.elo_scale).clamp(-10.0, 10.0)
-        fused = z_online + self.elo_proj(e)
+        fs = from_sq_idx.long().view(-1).clamp(0, UNKNOWN_FROM_SQ)
+        fused = z_online + self.elo_proj(e) + self.from_sq_emb(fs)
         x = fused.unsqueeze(1)
         x = self.encoder(x)
         out = x.squeeze(1)
-        return out
+        return self.out_ln(out)
 
 
 class ChessJEPA(nn.Module):
@@ -196,9 +175,14 @@ class ChessJEPA(nn.Module):
         elo: torch.Tensor,
         from_sq: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        del from_sq  # v2 predictor is Elo-only; optional arg for a unified training call site
+        b = int(board_t.shape[0])
+        dev = board_t.device
+        if from_sq is None:
+            from_sq_t = torch.full((b,), UNKNOWN_FROM_SQ, device=dev, dtype=torch.long)
+        else:
+            from_sq_t = from_sq.long().to(dev)
         z_online = self.encoder_online(board_t)
-        z_hat = self.predictor(z_online, elo)
+        z_hat = self.predictor(z_online, elo, from_sq_t)
         return z_online, z_hat
 
     def forward_target(self, board: torch.Tensor) -> torch.Tensor:
@@ -219,7 +203,7 @@ class ChessJEPA(nn.Module):
         return z.reshape(b, k, -1)
 
 
-class ChessJEPABuilder:
+class ChessJEPAFromSqLnBuilder:
     @staticmethod
     def build(architecture_config: dict[str, Any] | None) -> ChessJEPA:
         cfg = resolve_architecture_config(architecture_config)

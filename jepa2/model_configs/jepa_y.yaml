@@ -19,11 +19,10 @@ defaults:
   M_train: 32
   M_eval: 32
   ce_weight: 1.0
-  mse_played_weight: 0.05
   ce_label_smoothing: 0.0
   train_shuffle_seed: 7
   vicreg:
-    inv_coef: 0.0
+    inv_coef: 0.05
     var_coef: 0.1
     cov_coef: 0.0
     std_target: 1.0

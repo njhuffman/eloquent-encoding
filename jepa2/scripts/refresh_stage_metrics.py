@@ -49,9 +49,13 @@ def main() -> int:
 
     ckpt_path = stage_checkpoint_path(Path(spec["checkpoint_dir"]), spec["name"], stage)
     ckpt = load_checkpoint_mapping(ckpt_path, map_location="cpu")
-    resolved = ckpt.get("resolved_training") or (ckpt.get("extra") or {}).get("resolved_training")
-    if not resolved:
-        resolved = resolve_training_config_for_stage(spec, stage - 1)
+    resolved = resolve_training_config_for_stage(spec, stage - 1)
+    legacy = ckpt.get("resolved_training") or (ckpt.get("extra") or {}).get("resolved_training")
+    if isinstance(legacy, dict) and "mse_played_weight" in legacy:
+        raise ValueError(
+            "Checkpoint was saved with deprecated 'mse_played_weight'. "
+            "Retrain from an updated spec (use vicreg.inv_coef) or remove resolved_training from the checkpoint."
+        )
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model = load_jepa2_from_checkpoint(ckpt_path, device=device)
@@ -91,13 +95,12 @@ def main() -> int:
         "best_epoch": int(th.get("best_epoch", 0) or 0),
         "epochs_ran": int(th.get("epochs_ran", 0) or 0),
         "ce_weight": float(resolved["ce_weight"]),
-        "mse_played_weight": float(resolved["mse_played_weight"]),
         "vicreg": dict(resolved["vicreg"]),
         "metrics_path": str(metrics_path),
     }
     record.update(inf)
-    write_stage_metrics_json(metrics_path, record)
-    print(metrics_path, file=sys.stderr)
+    written = write_stage_metrics_json(metrics_path, record)
+    print(written, file=sys.stderr)
     return 0
 
 

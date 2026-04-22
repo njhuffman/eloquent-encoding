@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>jepa2 training dashboard</title>
+  <title>jepa3 training dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     :root {
@@ -145,8 +145,8 @@
 </head>
 <body>
   <header>
-    <h1>jepa2 training dashboard</h1>
-    <p>Models under <code>jepa2/model_configs/</code>, per-stage metrics JSON (val/train loss and CE after each stage), optional move benchmarks when present, forward benchmark, and <code>python -m jepa2.train</code> runner.</p>
+    <h1>jepa3 training dashboard</h1>
+    <p>Models under <code>jepa3/model_configs/</code>, per-stage metrics JSON after each training stage, optional move benchmarks when a <code>*_stage_benchmarks.json</code> exists, forward benchmark, and <code>python -m jepa3.train</code> runner.</p>
   </header>
   <nav>
     <button type="button" class="tab-btn active" data-tab="models">Models</button>
@@ -234,7 +234,7 @@
         </label>
         <button type="button" class="primary" id="btn-load-curves" style="margin-left:1rem;vertical-align:top;">Load</button>
         <p id="curves-hint" style="color:var(--muted);font-size:0.85rem;margin-top:0.75rem;">
-          Hold <kbd>Ctrl</kbd> or <kbd>⌘</kbd> and click to select multiple models. X-axis is <strong>training stage</strong> (S1…). Each point is one row from <code>metrics/&lt;name&gt;_stage_N_metrics.json</code> (same file training writes: <code>val_ce</code>/<code>train_ce</code>, <code>val_loss</code>/<code>train_loss</code>, VIC fields, etc.). Solid = validation, dashed = training (last-epoch train batch means where available), same color per model.
+          Hold <kbd>Ctrl</kbd> or <kbd>⌘</kbd> and click to select multiple models. X-axis is <strong>training stage</strong> (S1…). Each point is one row from <code>metrics/&lt;name&gt;_stage_N_metrics.json</code> (written by <code>jepa3.train</code>: <code>val_loss</code>/<code>train_loss</code>, from/to CE, VIC/JEPA fields, etc.). Solid = validation, dashed = training (last-epoch train batch means where available), same color per model.
         </p>
         <div class="bench-charts" style="margin-top:1rem;">
           <div class="panel bench-metric" style="margin:0;">
@@ -242,24 +242,20 @@
             <div class="bench-chart-wrap"><canvas id="curves-chart-loss"></canvas></div>
           </div>
           <div class="panel bench-metric" style="margin:0;">
-            <h3>Val vs train CE (masked legal-move CE)</h3>
-            <div class="bench-chart-wrap"><canvas id="curves-chart-ce"></canvas></div>
+            <h3>Val vs train from-square CE</h3>
+            <div class="bench-chart-wrap"><canvas id="curves-chart-from-ce"></canvas></div>
           </div>
           <div class="panel bench-metric" style="margin:0;">
-            <h3>Successor VIC weighted (legal-slot var/cov)</h3>
-            <div class="bench-chart-wrap"><canvas id="curves-chart-succ-vic-weighted"></canvas></div>
+            <h3>Val vs train to-square CE</h3>
+            <div class="bench-chart-wrap"><canvas id="curves-chart-to-ce"></canvas></div>
           </div>
           <div class="panel bench-metric" style="margin:0;">
-            <h3>Successor VIC variance (across legals / row)</h3>
-            <div class="bench-chart-wrap"><canvas id="curves-chart-succ-vic-var"></canvas></div>
+            <h3>Val vs train from-square top-1 %</h3>
+            <div class="bench-chart-wrap"><canvas id="curves-chart-from-top1"></canvas></div>
           </div>
           <div class="panel bench-metric" style="margin:0;">
-            <h3>Successor VIC covariance (across legals / row)</h3>
-            <div class="bench-chart-wrap"><canvas id="curves-chart-succ-vic-cov"></canvas></div>
-          </div>
-          <div class="panel bench-metric" style="margin:0;">
-            <h3>Successor VIC std mean (per row, then batch)</h3>
-            <div class="bench-chart-wrap"><canvas id="curves-chart-succ-vic-std-mean"></canvas></div>
+            <h3>Val vs train to-square top-1 %</h3>
+            <div class="bench-chart-wrap"><canvas id="curves-chart-to-top1"></canvas></div>
           </div>
           <div class="panel bench-metric" style="margin:0;">
             <h3>VIC invariance (mean (ẑ − z<sub>pos</sub>)²)</h3>
@@ -290,8 +286,8 @@
             <div class="bench-chart-wrap"><canvas id="curves-chart-vic-cov"></canvas></div>
           </div>
           <div class="panel bench-metric" style="margin:0;">
-            <h3>VIC weighted total</h3>
-            <div class="bench-chart-wrap"><canvas id="curves-chart-vic-weighted"></canvas></div>
+            <h3>JEPA bundle (weighted VIC)</h3>
+            <div class="bench-chart-wrap"><canvas id="curves-chart-jepa-weighted"></canvas></div>
           </div>
         </div>
       </div>
@@ -342,31 +338,10 @@
     let benchCharts = [];
     const CURVES_METRICS = [
       { val: "val_loss", train: "train_loss", canvas: "curves-chart-loss", yTitle: "loss" },
-      { val: "val_ce", train: "train_ce", canvas: "curves-chart-ce", yTitle: "CE" },
-      {
-        val: "val_succ_vicreg_weighted",
-        train: "train_succ_vicreg_weighted",
-        canvas: "curves-chart-succ-vic-weighted",
-        yTitle: "succ VIC weighted",
-      },
-      {
-        val: "val_succ_vicreg_var",
-        train: "train_succ_vicreg_var",
-        canvas: "curves-chart-succ-vic-var",
-        yTitle: "succ var penalty",
-      },
-      {
-        val: "val_succ_vicreg_cov",
-        train: "train_succ_vicreg_cov",
-        canvas: "curves-chart-succ-vic-cov",
-        yTitle: "succ cov penalty",
-      },
-      {
-        val: "val_succ_vicreg_std_mean",
-        train: "train_succ_vicreg_std_mean",
-        canvas: "curves-chart-succ-vic-std-mean",
-        yTitle: "succ std mean",
-      },
+      { val: "val_from_sq_ce", train: "train_from_sq_ce", canvas: "curves-chart-from-ce", yTitle: "from CE" },
+      { val: "val_to_sq_ce", train: "train_to_sq_ce", canvas: "curves-chart-to-ce", yTitle: "to CE" },
+      { val: "val_from_sq_top1", train: "train_from_sq_top1", canvas: "curves-chart-from-top1", yTitle: "from top1 %" },
+      { val: "val_to_sq_top1", train: "train_to_sq_top1", canvas: "curves-chart-to-top1", yTitle: "to top1 %" },
       { val: "val_vicreg_inv", train: "train_vicreg_inv", canvas: "curves-chart-vic-inv", yTitle: "inv (MSE)" },
       { val: "val_vicreg_inv_rms", train: "train_vicreg_inv_rms", canvas: "curves-chart-vic-inv-rms", yTitle: "RMS" },
       { val: "val_vicreg_std_mean", train: "train_vicreg_std_mean", canvas: "curves-chart-vic-std-mean", yTitle: "std mean" },
@@ -374,7 +349,7 @@
       { val: "val_vicreg_std_max", train: "train_vicreg_std_max", canvas: "curves-chart-vic-std-max", yTitle: "std max" },
       { val: "val_vicreg_var", train: "train_vicreg_var", canvas: "curves-chart-vic-var", yTitle: "var penalty" },
       { val: "val_vicreg_cov", train: "train_vicreg_cov", canvas: "curves-chart-vic-cov", yTitle: "cov penalty" },
-      { val: "val_vicreg_weighted", train: "train_vicreg_weighted", canvas: "curves-chart-vic-weighted", yTitle: "weighted VIC" },
+      { val: "val_jepa_weighted", train: "train_jepa_weighted", canvas: "curves-chart-jepa-weighted", yTitle: "JEPA weighted" },
     ];
     let curvesCharts = [];
     let _modelsCatalog = [];
@@ -432,7 +407,7 @@
       const resp = await fetch("/api/models");
       const rows = await resp.json();
       if (!resp.ok) throw new Error(resp.statusText);
-      $("models-status").textContent = rows.length ? "" : "No YAML specs in jepa2/model_configs.";
+      $("models-status").textContent = rows.length ? "" : "No YAML specs in jepa3/model_configs.";
       const tb = $("models-table").querySelector("tbody");
       tb.innerHTML = "";
       const benchModel = $("bench-model");
@@ -545,8 +520,8 @@
       if (!withData.length) {
         const names = selected.join(", ");
         $("bench-hint").textContent =
-          "No saved val move benchmarks for the selected model(s). Metrics live under checkpoint_dir/metrics/. " +
-          "For existing checkpoints: python -m jepa.scripts.refresh_dashboard_metrics --model <name>. (" +
+          "No saved stage benchmark JSON for the selected model(s) (expected metrics/<name>_stage_benchmarks.json). " +
+          "There is no jepa3 refresh script yet; this tab is for future parity. (" +
           names +
           ")";
         destroyBenchCharts();
@@ -753,7 +728,7 @@
 
       if (!anyData) {
         hintEl.textContent =
-          "No per-stage metrics JSON (expected keys such as val_loss / val_ce / train_vicreg_inv) for these stages. Train with jepa2 or run python -m jepa2.scripts.refresh_stage_metrics." +
+          "No per-stage metrics JSON (expected keys such as val_loss / train_loss / val_vicreg_inv) for these stages. Train with python -m jepa3.train." +
           (pathsSeen.length ? " Example: " + pathsSeen[0] : "");
         return;
       }

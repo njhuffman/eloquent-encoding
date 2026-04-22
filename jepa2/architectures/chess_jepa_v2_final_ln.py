@@ -1,56 +1,26 @@
 """
-Chess-JEPA v2 (jepa2): same backbone as v1 — spatial-token encoder, EMA target twin, Elo-conditioned predictor.
-Loss lives in ``jepa2.loss`` (CE + MSE + VICReg), not triplet.
+Chess-JEPA v2 with final LayerNorm on pooled encoder output and on predictor output.
+
+Same transformer stacks as ``chess_jepa_v2``; adds ``nn.LayerNorm(d_model)`` after pooling
+and after the predictor MLP stack. Separate ``architecture_id`` for checkpoint lineage.
 """
 
 from __future__ import annotations
 
 import copy
-import warnings
 from typing import Any
 
 import torch
 import torch.nn as nn
 
+from jepa2.architectures.chess_jepa_v2 import resolve_architecture_config
 from jepa2.config import BOARD_CHANNELS, BOARD_HEIGHT, BOARD_WIDTH
 
-ARCHITECTURE_ID = "chess_jepa_v2"
-
-DEFAULT_ARCHITECTURE_CONFIG: dict[str, Any] = {
-    "d_model": 256,
-    "encoder_layers": 4,
-    "predictor_layers": 2,
-    "nhead": 8,
-    "dim_feedforward": 1024,
-    "dropout": 0.1,
-    "use_cls": True,
-    "elo_scale": 3000.0,
-}
-
-
-def resolve_architecture_config(user: dict[str, Any] | None) -> dict[str, Any]:
-    cfg = {**DEFAULT_ARCHITECTURE_CONFIG, **(user or {})}
-    if cfg.pop("num_negatives_k", None) is not None:
-        warnings.warn(
-            "architecture.config num_negatives_k is ignored for jepa2; use M_train / M_eval in spec defaults.",
-            UserWarning,
-            stacklevel=2,
-        )
-    cfg["d_model"] = int(cfg["d_model"])
-    cfg["encoder_layers"] = int(cfg["encoder_layers"])
-    cfg["predictor_layers"] = int(cfg["predictor_layers"])
-    cfg["nhead"] = int(cfg["nhead"])
-    cfg["dim_feedforward"] = int(cfg["dim_feedforward"])
-    cfg["dropout"] = float(cfg["dropout"])
-    cfg["use_cls"] = bool(cfg["use_cls"])
-    cfg["elo_scale"] = float(cfg["elo_scale"])
-    if cfg["d_model"] % cfg["nhead"] != 0:
-        raise ValueError("d_model must be divisible by nhead")
-    return cfg
+ARCHITECTURE_ID = "chess_jepa_v2_final_ln"
 
 
 class BoardEncoder(nn.Module):
-    """64 square tokens (+ optional CLS), TransformerEncoder, raw d_model latent."""
+    """Like v2 BoardEncoder, plus ``LayerNorm(d_model)`` on the pooled (B, D) vector."""
 
     def __init__(
         self,
@@ -92,6 +62,7 @@ class BoardEncoder(nn.Module):
                 norm_first=True,
             )
             self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+        self.out_ln = nn.LayerNorm(d_model)
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
         if use_cls:
             nn.init.trunc_normal_(self.cls_token, std=0.02)
@@ -108,11 +79,11 @@ class BoardEncoder(nn.Module):
             out = x[:, 0, :]
         else:
             out = x.mean(dim=1)
-        return out
+        return self.out_ln(out)
 
 
 class PredictorHead(nn.Module):
-    """Elo-conditioned 2-layer Transformer on a single token; raw d_model output."""
+    """Like v2 PredictorHead, plus ``LayerNorm(d_model)`` on the squeezed (B, D) output."""
 
     def __init__(
         self,
@@ -137,6 +108,7 @@ class PredictorHead(nn.Module):
             norm_first=True,
         )
         self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+        self.out_ln = nn.LayerNorm(d_model)
 
     def forward(self, z_online: torch.Tensor, elo: torch.Tensor) -> torch.Tensor:
         e = (elo.float().unsqueeze(-1) / self.elo_scale).clamp(-10.0, 10.0)
@@ -144,7 +116,7 @@ class PredictorHead(nn.Module):
         x = fused.unsqueeze(1)
         x = self.encoder(x)
         out = x.squeeze(1)
-        return out
+        return self.out_ln(out)
 
 
 class ChessJEPA(nn.Module):
@@ -196,7 +168,7 @@ class ChessJEPA(nn.Module):
         elo: torch.Tensor,
         from_sq: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        del from_sq  # v2 predictor is Elo-only; optional arg for a unified training call site
+        del from_sq  # final_ln predictor ignores from_sq; optional for unified training API
         z_online = self.encoder_online(board_t)
         z_hat = self.predictor(z_online, elo)
         return z_online, z_hat
@@ -219,7 +191,7 @@ class ChessJEPA(nn.Module):
         return z.reshape(b, k, -1)
 
 
-class ChessJEPABuilder:
+class ChessJEPAFinalLnBuilder:
     @staticmethod
     def build(architecture_config: dict[str, Any] | None) -> ChessJEPA:
         cfg = resolve_architecture_config(architecture_config)

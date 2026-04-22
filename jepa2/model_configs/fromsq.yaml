@@ -1,0 +1,148 @@
+name: fromsq
+# Repo-local checkpoints/metrics (writable in devcontainer). To reuse weights from bulk ``jepa_y``, copy ``*_stage_*.pt`` here or chown the bulk ``metrics/`` dir.
+checkpoint_dir: jepa2_checkpoints/fromsq
+train_move_dataset_h5: databases/moves/training_moves_1M.h5
+val_move_dataset_h5: databases/moves/validation_moves_1M.h5
+
+val_sample:
+  n: 10000
+  seed: 42
+
+defaults:
+  ema_momentum: 0.9999
+  batch_size: 128
+  dataloader_num_workers: 4
+  log_interval: 1
+  use_amp: true
+  weight_decay: 0.01
+
+  M_train: 32
+  M_eval: 32
+  ce_weight: 0.5
+  ce_label_smoothing: 0.2
+  ce_temperature: 32.0
+  train_shuffle_seed: 7
+  vicreg:
+    inv_coef: 0.5
+    var_coef: 0.01
+    cov_coef: 0.01
+    std_target: 1.0
+
+architecture:
+  id: chess_jepa_v2_fromsq_ln
+  config:
+    d_model: 256
+    encoder_layers: 4
+    predictor_layers: 2
+    nhead: 8
+    dim_feedforward: 1024
+    dropout: 0.0
+    use_cls: true
+    elo_scale: 3000.0
+
+stages:
+  - sample:
+      n: 25600
+      seed: 1
+    # vic reg: var_coef=10.0, cov_coef=10.0, inv_coef=0.01, ce_weight=0.01, ema_momentum=0.99
+    train:
+      epochs: 1
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 25600
+      seed: 2
+    # vic reg: var_coef=5.0, cov_coef=5.0, inv_coef=0.5, ce_weight=0.01, ema_momentum=0.9999
+    train:
+      epochs: 1
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 25600
+      seed: 3
+    # vic reg: var_coef=2.0, cov_coef=2.0, inv_coef=0.5, ce_weight=0.1, ema_momentum=0.9999
+    train:
+      epochs: 1
+      learning_rate: 0.00002
+      weight_decay: 0.01
+  - sample:
+      n: 25600
+      seed: 4
+    # vic reg: var_coef=1.0, cov_coef=1.0, inv_coef=0.5, ce_weight=0.2, ema_momentum=0.9999
+    train:
+      epochs: 1
+      learning_rate: 0.00002
+      weight_decay: 0.01
+  - sample:
+      n: 256000
+      seed: 5
+    # vic reg: var_coef=1.0, cov_coef=1.0, inv_coef=0.5, ce_weight=0.2, ema_momentum=0.9999
+    train:
+      epochs: 1
+      learning_rate: 0.00002
+      weight_decay: 0.01
+  - sample:
+      n: 256000
+      seed: 6
+    # vic reg: var_coef=0.1, cov_coef=0.1, inv_coef=0.5, ce_weight=0.5, ema_momentum=0.9999
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 4
+      learning_rate: 0.00002
+      weight_decay: 0.01
+  - sample:
+      n: 256000
+      seed: 7
+    # vic reg: var_coef=0.1, cov_coef=0.1, inv_coef=0.5, ce_weight=0.5, ema_momentum=0.9999
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 8
+      learning_rate: 0.0002
+      weight_decay: 0.01
+  - sample:
+      n: 256000
+      seed: 8
+    # vic reg: var_coef=0.1, cov_coef=0.1, inv_coef=0.5, ce_weight=0.5, ema_momentum=0.9999
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 8
+      learning_rate: 0.00005
+      weight_decay: 0.01
+
+  - sample:
+      n: 256000
+      seed: 9
+    # vic reg: var_coef=0.01, cov_coef=0.01, inv_coef=0.5, ce_weight=0.5, ema_momentum=0.9999
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 8
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 256000
+      seed: 10
+    # vic reg: var_coef=0.01, cov_coef=0.01, inv_coef=0.5, ce_weight=0.5, ema_momentum=0.9999
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 8
+      learning_rate: 0.00005
+      weight_decay: 0.01
+
+  - sample:
+      n: 256000
+      seed: 11
+    # vic reg: var_coef=0.01, cov_coef=0.01, inv_coef=0.5, ce_weight=0.5, ema_momentum=0.9999, temperature 64
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 8
+      learning_rate: 0.00005
+      weight_decay: 0.01
+  - sample:
+      n: 256000
+      seed: 12
+    # vic reg: var_coef=0.01, cov_coef=0.01, inv_coef=0.5, ce_weight=0.5, ema_momentum=0.9999, temperature 32
+    train:
+      epochs: 1
+      gradient_accumulation_steps: 8
+      learning_rate: 0.00005
+      weight_decay: 0.01

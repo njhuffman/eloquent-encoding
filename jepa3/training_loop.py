@@ -1,4 +1,9 @@
-"""Epoch training for jepa2 (streaming legals + CE + VICReg + EMA)."""
+"""Epoch training for jepa3 (JEPA+VICReg + square CE heads + EMA + optional SAM/GSNR).
+
+Optional global L2 gradient clipping via ``max_gradient_norm`` in the resolved training
+config; gradient norms are logged on the same schedule as the multi-line loss log when
+``log_gradient_norms`` is true.
+"""
 
 from __future__ import annotations
 
@@ -11,46 +16,98 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from jepa.checkpoint_utils import build_model_checkpoint
-from jepa2.architectures import resolve_config_for_id
-from jepa2.checkpoint_paths import stage_checkpoint_path
-from jepa2.chess_io import prepare_batch_tensors
 from jepa2.gsnr_probe import flatten_encoder_online_grads, gsnr_metrics_from_grad_vectors
-from jepa2.loss import jepa2_loss_forward
 from jepa2.sam import sam_apply_perturbation, sam_build_perturbations, sam_revert_perturbation
-from jepa2.load import load_jepa2_from_checkpoint
+from jepa3.architectures import resolve_config_for_id
+from jepa3.batch_aux import legal_masks_np, post_move_boards_np
+from jepa3.checkpoint_paths import stage_checkpoint_path
+from jepa3.loss import jepa3_loss_forward
 
 
-_LOG_METRIC_ORDER = (
-    "loss",
-    "ce",
-    "ce_weighted",
-    "ce_temperature",
-    "ce_logit_min",
-    "ce_logit_max",
-    "ce_logit_true_mean",
-    "vicreg_weighted",
-    "vicreg_inv",
-    "vicreg_inv_rms",
-    "vicreg_std_mean",
-    "vicreg_std_min",
-    "vicreg_std_max",
-    "vicreg_cov",
-    "succ_vicreg_weighted",
-    "succ_vicreg_var",
-    "succ_vicreg_cov",
-    "succ_vicreg_std_mean",
-    "top1_acc",
-    "softmax_entropy",
-    "mean_n_legals_scored",
-)
+def _total_grad_l2_norm(parameters: list[torch.nn.Parameter]) -> float:
+    norms: list[torch.Tensor] = []
+    for p in parameters:
+        if p.grad is None:
+            continue
+        norms.append(p.grad.detach().float().norm(2))
+    if not norms:
+        return 0.0
+    return float(torch.norm(torch.stack(norms), 2))
+
+
+def _max_abs_grad(parameters: list[torch.nn.Parameter]) -> float:
+    mx: torch.Tensor | None = None
+    for p in parameters:
+        if p.grad is None:
+            continue
+        t = p.grad.detach().float().abs().max()
+        mx = t if mx is None else torch.maximum(mx, t)
+    return float(mx) if mx is not None else 0.0
+
+
+def _unscale_and_clip_gradients(
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler | None,
+    *,
+    use_amp: bool,
+    max_gradient_norm: float,
+) -> tuple[float, float, float, bool]:
+    """
+    AMP: unscale grads once, then optional global L2 clip.
+
+    Returns (L2 norm before clip, L2 norm after clip, max |grad| before clip, clipped?).
+    """
+    params = [p for g in optimizer.param_groups for p in g["params"]]
+    if use_amp and scaler is not None:
+        scaler.unscale_(optimizer)
+    gn_before = _total_grad_l2_norm(params)
+    max_abs = _max_abs_grad(params)
+    clipped = False
+    if max_gradient_norm > 0.0:
+        clip_grad_norm_(params, max_norm=max_gradient_norm)
+        clipped = gn_before > float(max_gradient_norm) * (1.0 + 1e-6)
+    gn_after = _total_grad_l2_norm(params)
+    return gn_before, gn_after, max_abs, clipped
+
+
+def _format_grad_log_line(
+    *,
+    L2_pre: float,
+    L2_post: float,
+    max_abs_pre: float,
+    clipped: bool,
+    max_norm: float,
+    train_log_mode: str,
+) -> str:
+    def _fmt(x: float) -> str:
+        if x != x:
+            return "nan"
+        if math.isinf(x):
+            return "inf" if x > 0 else "-inf"
+        return f"{x:.4e}"
+
+    parts = [
+        f"L2_pre={_fmt(L2_pre)}",
+        f"L2_post={_fmt(L2_post)}",
+        f"max_abs_pre={_fmt(max_abs_pre)}",
+        f"clipped={'yes' if clipped else 'no'}",
+    ]
+    if max_norm > 0.0:
+        parts.append(f"max_norm={max_norm:.6g}")
+    if L2_pre > 0.0 and math.isfinite(L2_pre) and math.isfinite(L2_post):
+        parts.append(f"L2_ratio={L2_post / L2_pre:.4f}")
+    if train_log_mode == "full":
+        nfin = not (math.isfinite(L2_pre) and math.isfinite(L2_post) and math.isfinite(max_abs_pre))
+        parts.append(f"nonfinite={str(nfin)}")
+    return "  grad " + " ".join(parts)
 
 
 def _metric_triples_from_window(ms: list[dict[str, float]]) -> dict[str, tuple[float, float, float]]:
-    """Per key: (mean, min, max) over micro-batches in one accumulation window."""
     if not ms:
         return {}
     keys: set[str] = set()
@@ -59,7 +116,7 @@ def _metric_triples_from_window(ms: list[dict[str, float]]) -> dict[str, tuple[f
     out: dict[str, tuple[float, float, float]] = {}
     for k in keys:
         vals = [float(m[k]) for m in ms if k in m]
-        vals = [v for v in vals if v == v]  # finite only
+        vals = [v for v in vals if v == v]
         if not vals:
             continue
         out[k] = (sum(vals) / len(vals), min(vals), max(vals))
@@ -74,35 +131,46 @@ def _format_accum_step_log(
     *,
     accum_steps: int,
     triples: dict[str, tuple[float, float, float]],
-    last_gsnr_within: float | None = None,
-    last_gsnr_between: float | None = None,
+    train_log_mode: str = "compact",
 ) -> str:
-    """One-line stderr log after an optimizer step: mean/min/max per metric over the window."""
-    lm, ll, lh = triples.get("loss", (float("nan"), float("nan"), float("nan")))
-    parts = [
-        f"epoch {epoch} opt_step {completed_opt_steps} micro_batches {micro_lo}-{micro_hi} accum={accum_steps}",
-        f"loss_avg={lm:.4f} loss_min={ll:.4f} loss_max={lh:.4f}",
-    ]
-    seen: set[str] = {"loss"}
-    for k in _LOG_METRIC_ORDER:
-        if k == "loss" or k not in triples:
-            continue
-        seen.add(k)
-        mn, lo, hi = triples[k]
-        if k == "top1_acc":
-            parts.append(f"{k}_avg={mn:.2f}% {k}_min={lo:.2f}% {k}_max={hi:.2f}%")
-        else:
-            parts.append(f"{k}_avg={mn:.4f} {k}_min={lo:.4f} {k}_max={hi:.4f}")
-    for k in sorted(triples.keys()):
-        if k in seen:
-            continue
-        mn, lo, hi = triples[k]
-        parts.append(f"{k}_avg={mn:.4f} {k}_min={lo:.4f} {k}_max={hi:.4f}")
-    if last_gsnr_within is not None and math.isfinite(last_gsnr_within):
-        parts.append(f"gsnr_within_last={last_gsnr_within:.4e}")
-    if last_gsnr_between is not None and math.isfinite(last_gsnr_between):
-        parts.append(f"gsnr_between_last={last_gsnr_between:.4e}")
-    return " ".join(parts)
+    """Multi-line stderr block (mean over the accumulation window)."""
+
+    def _mean(key: str) -> float:
+        return triples.get(key, (float("nan"), float("nan"), float("nan")))[0]
+
+    nan = float("nan")
+    l1 = (
+        f"epoch={epoch} step={completed_opt_steps} "
+        f"micro_batches={micro_lo}-{micro_hi} accum={accum_steps} loss={_mean('loss'):.4f}"
+    )
+    l2 = (
+        f"  vic  cov={_mean('vicreg_cov'):.6f} var={_mean('vicreg_var'):.6f} "
+        f"varcov_net={_mean('jepa_varcov_weighted'):.6f}"
+    )
+    l3 = (
+        f"  jepa inv={_mean('vicreg_inv'):.6f} inv_net={_mean('jepa_inv_weighted'):.6f} "
+        f"bundle_net={_mean('jepa_weighted'):.6f}"
+    )
+    l4 = (
+        f"  from ce={_mean('from_sq_ce'):.4f} net={_mean('from_sq_ce_weighted'):.4f} "
+        f"top1={_mean('from_sq_top1'):.2f}%"
+    )
+    l5 = (
+        f"  to   ce={_mean('to_sq_ce'):.4f} net={_mean('to_sq_ce_weighted'):.4f} "
+        f"top1={_mean('to_sq_top1'):.2f}%"
+    )
+    lines = [l1, l2, l3, l4, l5]
+    mode = train_log_mode if train_log_mode in ("compact", "full") else "compact"
+    if mode == "full":
+        _, ll, lh = triples.get("loss", (nan, nan, nan))
+        _, il, ih = triples.get("vicreg_inv", (nan, nan, nan))
+        vm, vl, vh = triples.get("vicreg_var", (nan, nan, nan))
+        cm, cl, ch = triples.get("vicreg_cov", (nan, nan, nan))
+        lines.append(
+            f"  ranges loss=[{ll:.4f},{lh:.4f}] inv=[{il:.6f},{ih:.6f}] "
+            f"var=[{vl:.6f},{vh:.6f}] cov=[{cl:.6f},{ch:.6f}]"
+        )
+    return "\n".join(lines)
 
 
 def _run_encoder_gsnr_probe(
@@ -118,7 +186,6 @@ def _run_encoder_gsnr_probe(
     global_step_seed: int,
     epoch: int,
 ) -> dict[str, float]:
-    """K extra forward-backward passes; no optimizer step. Encoder grads only for GSNR."""
     if not hasattr(model, "encoder_online"):
         return {
             "gsnr_encoder": float("nan"),
@@ -184,7 +251,6 @@ def _aggregated_encoder_grad_vector(
     use_amp: bool,
     scaler: torch.amp.GradScaler | None,
 ) -> torch.Tensor:
-    """Flattened encoder grad from accumulated ``.grad``; divide by AMP scale when active."""
     g = flatten_encoder_online_grads(model)
     if use_amp and scaler is not None:
         scale = float(scaler.get_scale())
@@ -196,7 +262,6 @@ def _between_step_grad_vectors_for_gsnr(
     step_grad_buf: deque,
     k: int,
 ) -> list[torch.Tensor] | None:
-    """Last up to ``k`` consecutive aggregated step grads; need at least 2."""
     if len(step_grad_buf) < 2:
         return None
     lst = list(step_grad_buf)
@@ -213,9 +278,9 @@ def _batch_to_rows(
     pr: torch.Tensor,
     fens: list[str],
 ) -> list[dict[str, Any]]:
-    B = int(board_t.shape[0])
+    b = int(board_t.shape[0])
     rows: list[dict[str, Any]] = []
-    for i in range(B):
+    for i in range(b):
         rows.append(
             {
                 "board_t": board_t[i].detach().cpu().numpy(),
@@ -244,62 +309,89 @@ def _forward_batch(
     device: torch.device,
     use_amp: bool,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    M_cap = int(resolved["M_train"]) if train else int(resolved["M_eval"])
+    del rng
     rows = _batch_to_rows(board_t, elo, fs, ts, pr, fens)
-    _, _, succ, mask, labels, _ = prepare_batch_tensors(rows, M_cap, rng)
+    post_np = post_move_boards_np(rows)
+    from_m_np, to_m_np = legal_masks_np(rows)
+
     board_t = board_t.to(device, non_blocking=True)
-    elo = elo.to(device, non_blocking=True)
-    succ = succ.to(device, non_blocking=True)
-    mask = mask.to(device, non_blocking=True)
-    labels = labels.to(device, non_blocking=True)
-
+    board_post = torch.from_numpy(post_np).to(device, non_blocking=True)
+    from_mask = torch.from_numpy(from_m_np).to(device, non_blocking=True)
+    to_mask = torch.from_numpy(to_m_np).to(device, non_blocking=True)
     fs_dev = fs.to(device, non_blocking=True, dtype=torch.long)
-    p_unk = float(resolved.get("from_sq_unknown_probability", 0.0))
-    if train and p_unk > 0.0:
-        from_sq_idx = fs_dev.clone()
-        if p_unk >= 1.0:
-            from_sq_idx.fill_(64)
-        else:
-            u = torch.rand(from_sq_idx.shape[0], device=device, dtype=torch.float32)
-            from_sq_idx[u < p_unk] = 64
-    else:
-        from_sq_idx = fs_dev
+    ts_dev = ts.to(device, non_blocking=True, dtype=torch.long)
 
-    vr = dict(resolved["vicreg"])
-    succ_vc = float(vr.get("succ_var_coef", 0.0))
-    succ_cc = float(vr.get("succ_cov_coef", 0.0))
-    need_succ_vic = succ_vc > 0.0 or succ_cc > 0.0
+    leak = float(resolved["move_head_prefix_leak"])
+
+    w_br = float(resolved.get("probe_board_recon_weight", 0.0))
+    w_meta = float(resolved.get("probe_meta_weight", 0.0))
+    run_probes = hasattr(model, "forward_aux_losses") and (w_br > 0.0 or w_meta > 0.0)
+    aux: dict[str, torch.Tensor] = {}
+
+    p_unk = float(resolved.get("from_sq_unknown_probability", 0.0))
+    from_sq_unk: torch.Tensor | None = None
+    if train and p_unk > 0.0:
+        if p_unk >= 1.0:
+            from_sq_unk = torch.ones(fs_dev.shape[0], device=device, dtype=torch.bool)
+        else:
+            u = torch.rand(fs_dev.shape[0], device=device, dtype=torch.float32)
+            from_sq_unk = u < p_unk
 
     if use_amp:
         with torch.amp.autocast("cuda"):
-            z_online, z_hat = model.forward_online(board_t, elo, from_sq_idx)
-            z_all = model.forward_target_stack(succ)
-            z_online_legals = (
-                model.forward_online_stack(succ) if need_succ_vic else None
+            z_glob_on, z_hat = model.encode_online_with_jepa(
+                board_t, fs_dev, ts_dev, from_sq_unk=from_sq_unk
             )
+            z_pos = model.encode_target_global(board_post)
+            from_logits = model.forward_from_logits(z_glob_on, move_head_prefix_leak=leak)
+            to_logits = model.forward_to_logits(z_glob_on, fs_dev, move_head_prefix_leak=leak)
+            if run_probes:
+                aux = model.forward_aux_losses(
+                    board_t,
+                    z_glob_on,
+                    compute_board_recon=w_br > 0.0,
+                    compute_meta=w_meta > 0.0,
+                )
     else:
-        z_online, z_hat = model.forward_online(board_t, elo, from_sq_idx)
-        z_all = model.forward_target_stack(succ)
-        z_online_legals = model.forward_online_stack(succ) if need_succ_vic else None
+        z_glob_on, z_hat = model.encode_online_with_jepa(
+            board_t, fs_dev, ts_dev, from_sq_unk=from_sq_unk
+        )
+        z_pos = model.encode_target_global(board_post)
+        from_logits = model.forward_from_logits(z_glob_on, move_head_prefix_leak=leak)
+        to_logits = model.forward_to_logits(z_glob_on, fs_dev, move_head_prefix_leak=leak)
+        if run_probes:
+            aux = model.forward_aux_losses(
+                board_t,
+                z_glob_on,
+                compute_board_recon=w_br > 0.0,
+                compute_meta=w_meta > 0.0,
+            )
 
-    b_idx = torch.arange(labels.shape[0], device=device, dtype=torch.long)
-    z_pos = z_all[b_idx, labels]
-    z_legals = z_all
-
-    loss, metrics = jepa2_loss_forward(
-        z_online,
+    loss, metrics = jepa3_loss_forward(
+        z_glob_on,
         z_hat,
         z_pos,
-        z_legals,
-        mask,
-        labels,
-        ce_weight=float(resolved["ce_weight"]),
-        ce_label_smoothing=float(resolved["ce_label_smoothing"]),
-        ce_temperature=float(resolved["ce_temperature"]),
-        vicreg=vr,
+        from_logits,
+        to_logits,
+        fs_dev,
+        ts_dev,
+        from_mask,
+        to_mask,
+        predictor_prefix_dims=int(model.cfg["predictor_prefix_dims"]),
+        jepa_weight=float(resolved["jepa_weight"]),
+        from_sq_ce_weight=float(resolved["from_sq_ce_weight"]),
+        to_sq_ce_weight=float(resolved["to_sq_ce_weight"]),
+        sq_ce_label_smoothing=float(resolved["sq_ce_label_smoothing"]),
+        vicreg=dict(resolved["vicreg"]),
         use_amp_cuda=bool(use_amp and device.type == "cuda"),
-        z_online_legals=z_online_legals,
     )
+    if run_probes and aux:
+        if w_br > 0.0 and "probe_board_recon" in aux:
+            loss = loss + w_br * aux["probe_board_recon"]
+            metrics["probe_board_recon_ce"] = float(aux["probe_board_recon"].detach())
+        if w_meta > 0.0 and "probe_meta" in aux:
+            loss = loss + w_meta * aux["probe_meta"]
+            metrics["probe_meta_loss"] = float(aux["probe_meta"].detach())
     return loss, metrics
 
 
@@ -315,12 +407,6 @@ def compute_epoch_metrics_inference(
     epoch: int,
     include_train: bool = True,
 ) -> dict[str, float]:
-    """
-    Forward-only metrics: optionally train (train mode), then val (eval).
-
-    When ``include_train`` is False, skips the train pass (e.g. training loop
-    already averaged per-batch train metrics).
-    """
     sums: dict[str, float] = {}
     counts = {"train": 0, "val": 0}
 
@@ -388,7 +474,7 @@ def run_training_epochs(
     resolved: dict[str, Any],
     metrics_run_meta: dict[str, Any] | None = None,
     global_step_seed: int = 0,
-) -> tuple[float, int, dict[str, float], float, dict[str, float]]:
+) -> tuple[float, int, dict[str, float], float, dict[str, float], int, bool]:
     tr = resolved["train"]
     epochs = int(tr["epochs"])
     lr = float(tr["learning_rate"])
@@ -397,6 +483,10 @@ def run_training_epochs(
     ema_momentum = float(resolved["ema_momentum"])
     log_interval = int(resolved.get("log_interval", 100))
     accum_steps = max(int(tr.get("gradient_accumulation_steps", 1)), 1)
+    train_log_mode = str(resolved.get("train_log_mode", "compact"))
+    max_gradient_norm = float(resolved["max_gradient_norm"])
+    log_gradient_norms = bool(resolved["log_gradient_norms"])
+    early_stop_joint_top1 = resolved.get("early_stop_joint_top1")
 
     optimizer = torch.optim.AdamW(model.trainable_parameters(), lr=lr, weight_decay=wd)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
@@ -415,6 +505,8 @@ def run_training_epochs(
     step_grad_buf: deque | None = deque(maxlen=gsnr_k) if gsnr_every > 0 else None
     last_gsnr_within: float | None = None
     last_gsnr_between: float | None = None
+    epochs_ran = 0
+    early_stopped = False
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -500,7 +592,6 @@ def run_training_epochs(
             if should_step:
                 replay_batches = list(replay_batch_window) if need_replay_buffer else []
 
-                # Between-step GSNR uses first-pass encoder grad (before SAM unscale/perturb/replay).
                 if gsnr_every > 0 and step_grad_buf is not None and hasattr(model, "encoder_online"):
                     step_grad_buf.append(
                         _aggregated_encoder_grad_vector(model, use_amp=use_amp, scaler=scaler)
@@ -508,33 +599,29 @@ def run_training_epochs(
 
                 if sam_rho > 0.0:
                     trainables = list(model.trainable_parameters())
-                    # Build epsilon from current .grad without scaler.unscale_: under AMP, grads are
-                    # scaled by S but eps = rho * g / ||g|| equals rho * (g/S) / ||g/S||, so one
-                    # scaler.step() can unscale the second-pass accumulation (GradScaler allows
-                    # only one unscale_ per step).
                     perturbations = sam_build_perturbations(trainables, sam_rho)
                     if perturbations:
                         sam_apply_perturbation(perturbations)
                         optimizer.zero_grad(set_to_none=True)
                         for tup in replay_batches:
-                            board_t, elo, fs, ts, pr, fens, ep, micro_bi = tup
-                            board_t = board_t.to(device, non_blocking=True)
-                            elo = elo.to(device, non_blocking=True)
-                            fs = fs.to(device, non_blocking=True)
-                            ts = ts.to(device, non_blocking=True)
-                            pr = pr.to(device, non_blocking=True)
+                            board_t2, elo2, fs2, ts2, pr2, fens2, ep, micro_bi = tup
+                            board_t2 = board_t2.to(device, non_blocking=True)
+                            elo2 = elo2.to(device, non_blocking=True)
+                            fs2 = fs2.to(device, non_blocking=True)
+                            ts2 = ts2.to(device, non_blocking=True)
+                            pr2 = pr2.to(device, non_blocking=True)
                             rng = random.Random(global_step_seed + int(ep) * 1_000_000 + int(micro_bi))
                             if use_amp:
                                 assert scaler is not None
                                 with torch.amp.autocast("cuda"):
                                     loss2, _ = _forward_batch(
                                         model,
-                                        board_t,
-                                        elo,
-                                        fs,
-                                        ts,
-                                        pr,
-                                        fens,
+                                        board_t2,
+                                        elo2,
+                                        fs2,
+                                        ts2,
+                                        pr2,
+                                        fens2,
                                         resolved,
                                         train=True,
                                         rng=rng,
@@ -545,12 +632,12 @@ def run_training_epochs(
                             else:
                                 loss2, _ = _forward_batch(
                                     model,
-                                    board_t,
-                                    elo,
-                                    fs,
-                                    ts,
-                                    pr,
-                                    fens,
+                                    board_t2,
+                                    elo2,
+                                    fs2,
+                                    ts2,
+                                    pr2,
+                                    fens2,
                                     resolved,
                                     train=True,
                                     rng=rng,
@@ -559,19 +646,20 @@ def run_training_epochs(
                                 )
                                 (loss2 / float(accum_steps)).backward()
                         sam_revert_perturbation(perturbations)
-                    if use_amp:
-                        assert scaler is not None
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
-                        optimizer.step()
+
+                gn_before, gn_after, max_abs, grad_clipped = _unscale_and_clip_gradients(
+                    optimizer,
+                    scaler,
+                    use_amp=use_amp,
+                    max_gradient_norm=max_gradient_norm,
+                )
+
+                if use_amp:
+                    assert scaler is not None
+                    scaler.step(optimizer)
+                    scaler.update()
                 else:
-                    if use_amp:
-                        assert scaler is not None
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
-                        optimizer.step()
+                    optimizer.step()
                 model.ema_update_target(ema_momentum)
                 completed_opt_steps += 1
                 triples = _metric_triples_from_window(accum_ms)
@@ -623,14 +711,21 @@ def run_training_epochs(
                             last_gsnr_between = between_g
                             gsnr_between_epoch.append(between_g)
 
-                    print(
-                        f"[gsnr] epoch={epoch} opt_step={completed_opt_steps} "
-                        f"within_update={_fmt_gsnr(within_g)} signal_w={_fmt_gsnr(ws)} noise_w={_fmt_gsnr(wn)} "
-                        f"grad_norm_mean_w={_fmt_gsnr(wgmn)} "
-                        f"between_updates={_fmt_gsnr(between_g)} signal_b={_fmt_gsnr(bs)} noise_b={_fmt_gsnr(bn)} "
-                        f"grad_norm_mean_b={_fmt_gsnr(bgmn)}",
-                        file=sys.stderr,
-                    )
+                    if train_log_mode == "full":
+                        print(
+                            f"[gsnr] epoch={epoch} opt_step={completed_opt_steps} "
+                            f"within_update={_fmt_gsnr(within_g)} signal_w={_fmt_gsnr(ws)} noise_w={_fmt_gsnr(wn)} "
+                            f"grad_norm_mean_w={_fmt_gsnr(wgmn)} "
+                            f"between_updates={_fmt_gsnr(between_g)} signal_b={_fmt_gsnr(bs)} noise_b={_fmt_gsnr(bn)} "
+                            f"grad_norm_mean_b={_fmt_gsnr(bgmn)}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"[gsnr] e{epoch} step{completed_opt_steps} "
+                            f"within={_fmt_gsnr(within_g)} between={_fmt_gsnr(between_g)}",
+                            file=sys.stderr,
+                        )
 
                 if log_interval and (completed_opt_steps - 1) % log_interval == 0:
                     print(
@@ -641,11 +736,22 @@ def run_training_epochs(
                             bi,
                             accum_steps=accum_steps,
                             triples=triples,
-                            last_gsnr_within=last_gsnr_within,
-                            last_gsnr_between=last_gsnr_between,
+                            train_log_mode=train_log_mode,
                         ),
                         file=sys.stderr,
                     )
+                    if log_gradient_norms:
+                        print(
+                            _format_grad_log_line(
+                                L2_pre=gn_before,
+                                L2_post=gn_after,
+                                max_abs_pre=max_abs,
+                                clipped=grad_clipped,
+                                max_norm=max_gradient_norm,
+                                train_log_mode=train_log_mode,
+                            ),
+                            file=sys.stderr,
+                        )
                 micro_in_accum = 0
 
         train_loss /= max(n_batches, 1)
@@ -678,17 +784,31 @@ def run_training_epochs(
         last_inf = inf
         last_train_epoch_loss = train_loss
         last_avg_train = avg_train
+        epochs_ran = epoch
 
-    return best_val, best_ep, last_inf, last_train_epoch_loss, last_avg_train
+        if early_stop_joint_top1 is not None:
+            tf = inf.get("train_from_sq_top1")
+            tt = inf.get("train_to_sq_top1")
+            if tf is not None and tt is not None:
+                try:
+                    joint = (float(tf) / 100.0) * (float(tt) / 100.0)
+                except (TypeError, ValueError):
+                    joint = float("nan")
+                thr = float(early_stop_joint_top1)
+                if math.isfinite(joint) and joint > thr:
+                    print(
+                        f"[early_stop] epoch={epoch} train_joint_top1={joint:.6f} "
+                        f"(train_from_top1={float(tf):.2f}% train_to_top1={float(tt):.2f}%) "
+                        f"> threshold={thr:.6f}",
+                        file=sys.stderr,
+                    )
+                    early_stopped = True
+                    break
+
+    return best_val, best_ep, last_inf, last_train_epoch_loss, last_avg_train, epochs_ran, early_stopped
 
 
 def write_stage_metrics_json(path: Path, record: dict[str, Any]) -> Path:
-    """
-    Write per-stage metrics JSON. Returns the path actually written.
-
-    If ``path`` is not writable (e.g. shared bulk volume owned by root), falls back to
-    ``{repo}/jepa2_checkpoints/{model}/metrics/{same filename}`` so training can finish.
-    """
     text = json.dumps(record, indent=2, default=str)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -699,7 +819,7 @@ def write_stage_metrics_json(path: Path, record: dict[str, Any]) -> Path:
         if not isinstance(name, str) or not name.strip():
             raise
         repo_root = Path(__file__).resolve().parents[1]
-        alt = repo_root / "jepa2_checkpoints" / name.strip() / "metrics" / path.name
+        alt = repo_root / "jepa3_checkpoints" / name.strip() / "metrics" / path.name
         alt.parent.mkdir(parents=True, exist_ok=True)
         alt.write_text(text, encoding="utf-8")
         print(
@@ -746,14 +866,14 @@ def save_stage_checkpoint(
             "epochs_ran": epochs_ran,
         },
         training_spec=spec_snap,
-        extra={"resolved_training": resolved, "jepa2": True},
+        extra={"resolved_training": resolved, "jepa3": True},
     )
     torch.save(payload, out_path)
     return out_path
 
 
 def init_stage_zero(spec: dict[str, Any], device: torch.device) -> Path:
-    from jepa2.architectures import build_model
+    from jepa3.architectures import build_model
 
     name = spec["name"]
     ckpt_dir = Path(spec["checkpoint_dir"])

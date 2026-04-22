@@ -166,6 +166,7 @@ def _score_legals(
     board_t: np.ndarray,
     elo: float,
     succ_stack: np.ndarray,
+    from_sq: int,
     device: torch.device,
     *,
     use_amp: bool,
@@ -179,6 +180,7 @@ def _score_legals(
         succ_stack,
         None,
         device,
+        from_sq,
         use_amp=use_amp,
         succ_chunk=succ_chunk,
     )
@@ -192,6 +194,7 @@ def _sims_zhat_positive_l2(
     succ_stack: np.ndarray,
     board_pos: np.ndarray | None,
     device: torch.device,
+    from_sq: int,
     *,
     use_amp: bool,
     succ_chunk: int,
@@ -199,10 +202,15 @@ def _sims_zhat_positive_l2(
     """
     One ``forward_online`` per position, chunked ``forward_target`` on legals, optional
     true-successor L2 ‖z_hat - z_pos‖ (EMA vs online positive encoder).
+
+    ``from_sq`` is the dataset row's starting square index (0..63), passed into
+    ``forward_online`` so architectures that condition the predictor on from-square
+    see the known square at benchmark time (matches eval, not the unknown token).
     """
     model.eval()
     bt = torch.from_numpy(board_t).unsqueeze(0).to(device)
     elo_t = torch.tensor([elo], dtype=torch.float32, device=device)
+    from_sq_t = torch.tensor([int(from_sq)], dtype=torch.long, device=device)
     l_total = succ_stack.shape[0]
     sims_list: list[np.ndarray] = []
     l2_ema: float | None = None
@@ -211,9 +219,9 @@ def _sims_zhat_positive_l2(
     with torch.no_grad():
         if use_amp and device.type == "cuda":
             with torch.amp.autocast("cuda"):
-                _, z_hat = model.forward_online(bt, elo_t)
+                _, z_hat = model.forward_online(bt, elo_t, from_sq_t)
         else:
-            _, z_hat = model.forward_online(bt, elo_t)
+            _, z_hat = model.forward_online(bt, elo_t, from_sq_t)
         z_hat_f = z_hat.float()
 
         for start in range(0, l_total, succ_chunk):
@@ -307,6 +315,7 @@ def run_move_and_positive_metrics_for_checkpoint(
             succ_stack,
             board_pos,
             device,
+            fs,
             use_amp=use_amp,
             succ_chunk=succ_chunk,
         )

@@ -1,5 +1,5 @@
-name: tiny_test
-checkpoint_dir: jepa2_checkpoints/tiny_test
+name: tiny_test_v4
+checkpoint_dir: jepa3_checkpoints/tiny_test_v4
 train_move_dataset_h5: databases/moves/training_moves_1M.h5
 val_move_dataset_h5: databases/moves/validation_moves_1M.h5
 
@@ -7,7 +7,6 @@ val_sample:
   n: 128
   seed: 42
 
-# Move-ranking benchmark sample size for dashboard (keep small for quick refresh).
 dashboard_metrics:
   move_benchmark_sample_n: 512
   move_benchmark_seed: 42
@@ -16,11 +15,6 @@ dashboard_metrics:
   device: cpu
 
 defaults:
-  ema_momentum: 0.99
-  M_train: 32
-  M_eval: 48
-  ce_weight: 1.0
-  ce_label_smoothing: 0.0
   batch_size: 8
   weight_decay: 0.05
   dataloader_num_workers: 0
@@ -28,23 +22,28 @@ defaults:
   use_amp: true
   val_legal_seed: 42
   train_shuffle_seed: 7
-  vicreg:
-    inv_coef: 0.05
-    var_coef: 0.1
-    cov_coef: 0.0
-    std_target: 1.0
+  gsnr_probe_every_opt_steps: 0
+  probe_board_recon_weight: 0.1
+  probe_meta_weight: 0.05
 
 architecture:
-  id: chess_jepa_v2
+  id: chess_jepa_v4
   config:
     d_model: 128
     encoder_layers: 2
-    predictor_layers: 1
     nhead: 4
     dim_feedforward: 512
     dropout: 0.0
     use_cls: true
-    elo_scale: 3000.0
+    predictor_prefix_dims: 64
+    jepa_square_embed_dim: 48
+    predictor_hidden: 256
+    predictor_depth: 2
+    from_to_head_hidden: 128
+    from_to_head_depth: 2
+    move_head_prefix_leak: 0.05
+    probe_board_recon_hidden: 128
+    probe_meta_hidden: 64
 
 stages:
   - sample:
@@ -54,3 +53,14 @@ stages:
       epochs: 1
       learning_rate: 0.0001
       weight_decay: 0.01
+    ema_momentum: 0.99
+    jepa_weight: 1.0
+    from_sq_ce_weight: 0.5
+    to_sq_ce_weight: 0.5
+    sq_ce_label_smoothing: 0.0
+    vicreg:
+      inv_coef: 0.05
+      var_coef: 0.1
+      cov_coef: 0.0
+      std_target: 1.0
+    move_head_prefix_leak: 0.05
