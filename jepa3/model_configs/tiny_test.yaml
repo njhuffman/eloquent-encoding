@@ -33,7 +33,6 @@ architecture:
     dim_feedforward: 512
     dropout: 0.0
     use_cls: true
-    predictor_prefix_dims: 64
     jepa_square_embed_dim: 48
     predictor_hidden: 256
     predictor_depth: 2
@@ -58,4 +57,3 @@ stages:
       var_coef: 0.1
       cov_coef: 0.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0

@@ -23,8 +23,8 @@ defaults:
   val_legal_seed: 42
   train_shuffle_seed: 7
   gsnr_probe_every_opt_steps: 0
-  probe_board_recon_weight: 0.1
-  probe_meta_weight: 0.05
+  aux_board_recon_weight: 0.1
+  aux_meta_weight: 0.05
 
 architecture:
   id: chess_jepa_v4
@@ -35,15 +35,13 @@ architecture:
     dim_feedforward: 512
     dropout: 0.0
     use_cls: true
-    predictor_prefix_dims: 64
     jepa_square_embed_dim: 48
     predictor_hidden: 256
     predictor_depth: 2
     from_to_head_hidden: 128
     from_to_head_depth: 2
-    move_head_prefix_leak: 0.05
-    probe_board_recon_hidden: 128
-    probe_meta_hidden: 64
+    aux_board_recon_hidden: 128
+    aux_meta_hidden: 64
 
 stages:
   - sample:
@@ -63,4 +61,3 @@ stages:
       var_coef: 0.1
       cov_coef: 0.0
       std_target: 1.0
-    move_head_prefix_leak: 0.05

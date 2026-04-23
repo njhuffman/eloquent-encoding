@@ -18,8 +18,8 @@ def main() -> None:
     p.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("JEPA_DASHBOARD_PORT", "8765")),
-        help="Port (default: $JEPA_DASHBOARD_PORT or 8765)",
+        default=int(os.environ.get("JEPA_DASHBOARD_PORT", "8642")),
+        help="Port (default: $JEPA_DASHBOARD_PORT or 8642)",
     )
     args = p.parse_args()
     uvicorn.run(

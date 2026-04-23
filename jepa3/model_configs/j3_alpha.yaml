@@ -34,7 +34,6 @@ architecture:
     dim_feedforward: 1024
     dropout: 0.0
     use_cls: true
-    predictor_prefix_dims: 64
     jepa_square_embed_dim: 64
     predictor_hidden: 256
     predictor_depth: 4
@@ -60,7 +59,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 1.0
   - sample:
       n: 131072
       seed: 1
@@ -79,7 +77,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 1.0
   - sample:
       n: 131072
       seed: 1
@@ -98,7 +95,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 1.0
   - sample:
       n: 131072
       seed: 1
@@ -117,7 +113,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 1.0
   - sample:
       n: 131072
       seed: 1
@@ -136,7 +131,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 1.0
   - sample:
       n: 131072
       seed: 1
@@ -155,7 +149,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 1.0
   - sample:
       n: 8196
       seed: 1
@@ -174,7 +167,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
   - sample:
       n: 8196
       seed: 1
@@ -193,7 +185,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
   - sample:
       n: 8196
       seed: 1
@@ -212,7 +203,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
   - sample:
       n: 8196
       seed: 1
@@ -231,7 +221,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
   - sample:
       n: 8196
       seed: 1
@@ -250,7 +239,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
   - sample:
       n: 16392
       seed: 1
@@ -269,7 +257,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
     early_stop_joint_top1: 0.4
   - sample:
       n: 32784
@@ -289,7 +276,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
     early_stop_joint_top1: 0.4
   - sample:
       n: 65536
@@ -309,7 +295,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
     early_stop_joint_top1: 0.4
   - sample:
       n: 131072
@@ -329,7 +314,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
     early_stop_joint_top1: 0.45
   - sample:
       n: 262144
@@ -349,7 +333,6 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
     early_stop_joint_top1: 0.4
   - sample:
       n: 524288
@@ -369,5 +352,4 @@ stages:
       var_coef: 10.0
       cov_coef: 10.0
       std_target: 1.0
-    move_head_prefix_leak: 0.0
     early_stop_joint_top1: 0.4

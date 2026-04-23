@@ -39,10 +39,9 @@ def test_masked_square_ce_ignores_masked_logits() -> None:
 def test_jepa3_loss_forward_shapes() -> None:
     torch.manual_seed(1)
     d = 32
-    p = 16
     b = 3
     z_on = torch.randn(b, d)
-    z_hat = torch.randn(b, p)
+    z_hat = torch.randn(b, d)
     z_pos = torch.randn(b, d)
     fl = torch.randn(b, 64)
     tl = torch.randn(b, 64)
@@ -65,7 +64,6 @@ def test_jepa3_loss_forward_shapes() -> None:
         ts,
         fm,
         tm,
-        predictor_prefix_dims=p,
         jepa_weight=1.0,
         from_sq_ce_weight=1.0,
         to_sq_ce_weight=1.0,

@@ -1,5 +1,5 @@
-name: j3_beta
-checkpoint_dir: jepa3_checkpoints/j3_beta
+name: j3_gamma
+checkpoint_dir: jepa3_checkpoints/j3_gamma
 train_move_dataset_h5: databases/moves/training_moves_1M.h5
 val_move_dataset_h5: databases/moves/validation_moves_1M.h5
 
@@ -15,7 +15,7 @@ dashboard_metrics:
   device: auto
 
 defaults:
-  batch_size: 32 # 1024
+  batch_size: 128 # 1024
   dataloader_num_workers: 4
   log_interval: 1
   use_amp: true
@@ -37,7 +37,7 @@ architecture:
     dropout: 0.0
     use_cls: false
     jepa_square_embed_dim: 64
-    predictor_hidden: 256
+    predictor_hidden: 512
     predictor_depth: 3
     from_to_head_hidden: 512
     from_to_head_depth: 2
@@ -45,6 +45,69 @@ architecture:
     aux_meta_hidden: 256
 
 stages:
+
+  - sample:
+      n: 2024
+      seed: 1
+    train:
+      epochs: 50
+      gradient_accumulation_steps: 1
+      learning_rate: 0.0005
+      weight_decay: 0.01
+    ema_momentum: 0.999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 1.0
+    to_sq_ce_weight: 1.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 0.1
+      var_coef: 1.0
+      cov_coef: 1.0
+      std_target: 1.0
+    aux_board_recon_weight: 1.0 # 1.0
+    aux_meta_weight: 0.1
+  - sample:
+      n: 4024
+      seed: 1
+    train:
+      epochs: 50
+      gradient_accumulation_steps: 1
+      learning_rate: 0.0005
+      weight_decay: 0.01
+    ema_momentum: 0.999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 1.0
+    to_sq_ce_weight: 1.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 0.1
+      var_coef: 1.0
+      cov_coef: 1.0
+      std_target: 1.0
+    aux_board_recon_weight: 1.0 # 1.0
+    aux_meta_weight: 0.1
+  - sample:
+      n: 202400
+      seed: 1
+    train:
+      epochs: 50
+      gradient_accumulation_steps: 1
+      learning_rate: 0.0005
+      weight_decay: 0.01
+    ema_momentum: 0.9999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 0.0
+    to_sq_ce_weight: 0.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 10.0
+      var_coef: 1.0
+      cov_coef: 1.0
+      std_target: 1.0
+    aux_board_recon_weight: 1.0 # 1.0
+    aux_meta_weight: 0.1
+
+
 
   # stage 1
   - sample:

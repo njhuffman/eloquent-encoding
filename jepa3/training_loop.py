@@ -160,6 +160,17 @@ def _format_accum_step_log(
         f"top1={_mean('to_sq_top1'):.2f}%"
     )
     lines = [l1, l2, l3, l4, l5]
+    aux_bits: list[str] = []
+    if "aux_board_recon_ce" in triples:
+        aux_bits.append(f"br_ce={_mean('aux_board_recon_ce'):.4f}")
+        if "aux_board_recon_top1" in triples:
+            aux_bits.append(f"br_top1={_mean('aux_board_recon_top1'):.2f}%")
+    if "aux_meta_loss" in triples:
+        aux_bits.append(f"meta={_mean('aux_meta_loss'):.4f}")
+        if "aux_meta_top1" in triples:
+            aux_bits.append(f"meta_top1={_mean('aux_meta_top1'):.2f}%")
+    if aux_bits:
+        lines.append("  aux " + " ".join(aux_bits))
     mode = train_log_mode if train_log_mode in ("compact", "full") else "compact"
     if mode == "full":
         _, ll, lh = triples.get("loss", (nan, nan, nan))
@@ -170,6 +181,21 @@ def _format_accum_step_log(
             f"  ranges loss=[{ll:.4f},{lh:.4f}] inv=[{il:.6f},{ih:.6f}] "
             f"var=[{vl:.6f},{vh:.6f}] cov=[{cl:.6f},{ch:.6f}]"
         )
+        if "aux_board_recon_ce" in triples or "aux_meta_loss" in triples:
+            pr: list[str] = []
+            if "aux_board_recon_ce" in triples:
+                _, brl, brh = triples["aux_board_recon_ce"]
+                pr.append(f"br_ce=[{brl:.4f},{brh:.4f}]")
+            if "aux_board_recon_top1" in triples:
+                _, br1l, br1h = triples["aux_board_recon_top1"]
+                pr.append(f"br_top1=[{br1l:.2f},{br1h:.2f}]%")
+            if "aux_meta_loss" in triples:
+                _, ml, mh = triples["aux_meta_loss"]
+                pr.append(f"meta=[{ml:.4f},{mh:.4f}]")
+            if "aux_meta_top1" in triples:
+                _, m1l, m1h = triples["aux_meta_top1"]
+                pr.append(f"meta_top1=[{m1l:.2f},{m1h:.2f}]%")
+            lines.append("  ranges " + " ".join(pr))
     return "\n".join(lines)
 
 
@@ -321,11 +347,9 @@ def _forward_batch(
     fs_dev = fs.to(device, non_blocking=True, dtype=torch.long)
     ts_dev = ts.to(device, non_blocking=True, dtype=torch.long)
 
-    leak = float(resolved["move_head_prefix_leak"])
-
-    w_br = float(resolved.get("probe_board_recon_weight", 0.0))
-    w_meta = float(resolved.get("probe_meta_weight", 0.0))
-    run_probes = hasattr(model, "forward_aux_losses") and (w_br > 0.0 or w_meta > 0.0)
+    w_br = float(resolved.get("aux_board_recon_weight", 0.0))
+    w_meta = float(resolved.get("aux_meta_weight", 0.0))
+    run_prefix_aux = hasattr(model, "forward_prefix_aux_losses") and (w_br > 0.0 or w_meta > 0.0)
     aux: dict[str, torch.Tensor] = {}
 
     p_unk = float(resolved.get("from_sq_unknown_probability", 0.0))
@@ -343,10 +367,10 @@ def _forward_batch(
                 board_t, fs_dev, ts_dev, from_sq_unk=from_sq_unk
             )
             z_pos = model.encode_target_global(board_post)
-            from_logits = model.forward_from_logits(z_glob_on, move_head_prefix_leak=leak)
-            to_logits = model.forward_to_logits(z_glob_on, fs_dev, move_head_prefix_leak=leak)
-            if run_probes:
-                aux = model.forward_aux_losses(
+            from_logits = model.forward_from_logits(z_glob_on)
+            to_logits = model.forward_to_logits(z_glob_on, fs_dev)
+            if run_prefix_aux:
+                aux = model.forward_prefix_aux_losses(
                     board_t,
                     z_glob_on,
                     compute_board_recon=w_br > 0.0,
@@ -357,10 +381,10 @@ def _forward_batch(
             board_t, fs_dev, ts_dev, from_sq_unk=from_sq_unk
         )
         z_pos = model.encode_target_global(board_post)
-        from_logits = model.forward_from_logits(z_glob_on, move_head_prefix_leak=leak)
-        to_logits = model.forward_to_logits(z_glob_on, fs_dev, move_head_prefix_leak=leak)
-        if run_probes:
-            aux = model.forward_aux_losses(
+        from_logits = model.forward_from_logits(z_glob_on)
+        to_logits = model.forward_to_logits(z_glob_on, fs_dev)
+        if run_prefix_aux:
+            aux = model.forward_prefix_aux_losses(
                 board_t,
                 z_glob_on,
                 compute_board_recon=w_br > 0.0,
@@ -377,7 +401,6 @@ def _forward_batch(
         ts_dev,
         from_mask,
         to_mask,
-        predictor_prefix_dims=int(model.cfg["predictor_prefix_dims"]),
         jepa_weight=float(resolved["jepa_weight"]),
         from_sq_ce_weight=float(resolved["from_sq_ce_weight"]),
         to_sq_ce_weight=float(resolved["to_sq_ce_weight"]),
@@ -385,13 +408,25 @@ def _forward_batch(
         vicreg=dict(resolved["vicreg"]),
         use_amp_cuda=bool(use_amp and device.type == "cuda"),
     )
-    if run_probes and aux:
-        if w_br > 0.0 and "probe_board_recon" in aux:
-            loss = loss + w_br * aux["probe_board_recon"]
-            metrics["probe_board_recon_ce"] = float(aux["probe_board_recon"].detach())
-        if w_meta > 0.0 and "probe_meta" in aux:
-            loss = loss + w_meta * aux["probe_meta"]
-            metrics["probe_meta_loss"] = float(aux["probe_meta"].detach())
+    if run_prefix_aux and aux:
+        if w_br > 0.0 and "aux_board_recon" in aux:
+            loss = loss + w_br * aux["aux_board_recon"]
+            metrics["aux_board_recon_ce"] = float(aux["aux_board_recon"].detach())
+            if "aux_board_recon_top1" in aux:
+                metrics["aux_board_recon_top1"] = float(aux["aux_board_recon_top1"].detach())
+        if w_meta > 0.0 and "aux_meta" in aux:
+            loss = loss + w_meta * aux["aux_meta"]
+            metrics["aux_meta_loss"] = float(aux["aux_meta"].detach())
+            if "aux_meta_top1" in aux:
+                metrics["aux_meta_top1"] = float(aux["aux_meta_top1"].detach())
+            if "aux_meta_turn_top1" in aux:
+                metrics["aux_meta_turn_top1"] = float(aux["aux_meta_turn_top1"].detach())
+            if "aux_meta_castle_top1" in aux:
+                metrics["aux_meta_castle_top1"] = float(aux["aux_meta_castle_top1"].detach())
+            if "aux_meta_ep_top1" in aux:
+                metrics["aux_meta_ep_top1"] = float(aux["aux_meta_ep_top1"].detach())
+    # ``jepa3_loss_forward`` sets metrics["loss"] before aux; keep it aligned with the scalar we backprop.
+    metrics["loss"] = float(loss.detach())
     return loss, metrics
 
 

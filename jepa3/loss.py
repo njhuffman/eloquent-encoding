@@ -67,7 +67,6 @@ def jepa3_loss_forward(
     from_mask: torch.Tensor,
     to_mask: torch.Tensor,
     *,
-    predictor_prefix_dims: int,
     jepa_weight: float,
     from_sq_ce_weight: float,
     to_sq_ce_weight: float,
@@ -83,11 +82,12 @@ def jepa3_loss_forward(
         from_logits = from_logits.float()
         to_logits = to_logits.float()
 
-        p = int(predictor_prefix_dims)
-        if z_hat.shape[-1] != p:
-            raise ValueError(f"z_hat last dim must equal predictor_prefix_dims={p}, got {z_hat.shape[-1]}")
-        if z_pos_global.shape[-1] < p:
-            raise ValueError(f"z_pos_global dim {z_pos_global.shape[-1]} < predictor_prefix_dims={p}")
+        d = int(z_online_global.shape[-1])
+        if z_hat.shape[-1] != d or z_pos_global.shape[-1] != d:
+            raise ValueError(
+                f"z_online_global, z_hat, z_pos_global must share last dim d_model={d}; "
+                f"got z_hat {z_hat.shape[-1]}, z_pos {z_pos_global.shape[-1]}"
+            )
 
         inv_c = float(vicreg["inv_coef"])
         var_c = float(vicreg["var_coef"])
@@ -96,10 +96,7 @@ def jepa3_loss_forward(
         jw = float(jepa_weight)
         fw = float(from_sq_ce_weight)
         tw = float(to_sq_ce_weight)
-        # Invariance only in the first P dims (predictor output vs target prefix). No gradient on
-        # z_pos dimensions beyond P from this term.
-        z_pos_p = z_pos_global[:, :p]
-        inv_raw = (z_hat - z_pos_p.detach()).pow(2).mean()
+        inv_raw = (z_hat - z_pos_global.detach()).pow(2).mean()
         # Variance / covariance on the full online global (all d_model dims).
         _, _, _, vic_var_cov, m_v = vicreg_losses(
             z_online_global,

@@ -40,17 +40,16 @@ def _jepa3_forward_step(
     board = torch.randn(b, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS, device=device, dtype=torch.float32)
     fs = torch.randint(0, 64, (b,), device=device, dtype=torch.long)
     ts = torch.randint(0, 64, (b,), device=device, dtype=torch.long)
-    leak = float(getattr(model, "cfg", {}).get("move_head_prefix_leak", 0.0))
 
     if use_amp:
         with torch.amp.autocast("cuda"):
             z_glob, _z_hat = model.encode_online_with_jepa(board, fs, ts)
-            _ = model.forward_from_logits(z_glob, move_head_prefix_leak=leak)
-            _ = model.forward_to_logits(z_glob, fs, move_head_prefix_leak=leak)
+            _ = model.forward_from_logits(z_glob)
+            _ = model.forward_to_logits(z_glob, fs)
     else:
         z_glob, _z_hat = model.encode_online_with_jepa(board, fs, ts)
-        _ = model.forward_from_logits(z_glob, move_head_prefix_leak=leak)
-        _ = model.forward_to_logits(z_glob, fs, move_head_prefix_leak=leak)
+        _ = model.forward_from_logits(z_glob)
+        _ = model.forward_to_logits(z_glob, fs)
 
 
 def benchmark_forward_pass(

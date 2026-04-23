@@ -4,15 +4,9 @@ Loss coefficients (jepa_weight, CE weights, label smoothing, vicreg) and target
 ``ema_momentum`` must be set on each ``stages[i]``; they are not read from ``defaults:``
 and have no built-in defaults.
 
-``move_head_prefix_leak`` (float in ``[0, 1]``) may be set in ``defaults`` and/or overridden
-per stage: λ=0 gives no CE gradient into the first ``predictor_prefix_dims`` encoder channels
-for the from/to heads; λ=1 is full CE gradient there; values in between interpolate (same
-semantics for ``chess_jepa_v3`` and ``chess_jepa_v4``). Optional architecture
-``move_head_prefix_leak`` is only the checkpoint default when inference calls omit an
-explicit λ.
-
-Optional probe weights ``probe_board_recon_weight`` and ``probe_meta_weight`` may be set in
-``defaults`` and/or per stage (default ``0.0`` = probes not computed for v4).
+Optional aux weights ``aux_board_recon_weight`` and ``aux_meta_weight`` may be set in
+``defaults`` and/or per stage (default ``0.0`` = v4 aux tasks not computed). Use small
+values (e.g. ``0.01``--``0.1``) for light pressure; each ``stages[i]`` may override.
 
 Optional ``early_stop_joint_top1`` in ``(0, 1]``: stop training when
 ``(train_from_sq_top1/100) * (train_to_sq_top1/100)`` exceeds that value (epoch mean over
@@ -120,7 +114,6 @@ DEFAULTS: dict[str, Any] = {
     "train_log_mode": "compact",
     "max_gradient_norm": 0.0,
     "log_gradient_norms": True,
-    "move_head_prefix_leak": 0.0,
     "early_stop_joint_top1": None,
     "gsnr_probe_k": 8,
     "gsnr_probe_every_opt_steps": 0,
@@ -128,8 +121,8 @@ DEFAULTS: dict[str, Any] = {
     "use_amp": True,
     "val_legal_seed": 42,
     "train_shuffle_seed": 0,
-    "probe_board_recon_weight": 0.0,
-    "probe_meta_weight": 0.0,
+    "aux_board_recon_weight": 0.0,
+    "aux_meta_weight": 0.0,
 }
 
 
@@ -313,12 +306,7 @@ def resolve_training_config_for_stage(spec: dict[str, Any], stage_index: int) ->
         raise ValueError(f"log_gradient_norms must be a bool (got {lgn!r})")
     merged["log_gradient_norms"] = bool(lgn)
 
-    lam = float(merged.get("move_head_prefix_leak", 0.0))
-    if not math.isfinite(lam) or lam < 0.0 or lam > 1.0:
-        raise ValueError(f"move_head_prefix_leak must be finite and in [0, 1] (got {merged.get('move_head_prefix_leak')!r})")
-    merged["move_head_prefix_leak"] = lam
-
-    for pw in ("probe_board_recon_weight", "probe_meta_weight"):
+    for pw in ("aux_board_recon_weight", "aux_meta_weight"):
         wv = float(merged.get(pw, 0.0))
         if not math.isfinite(wv) or wv < 0.0:
             raise ValueError(f"{pw} must be finite and >= 0 (got {merged.get(pw)!r})")

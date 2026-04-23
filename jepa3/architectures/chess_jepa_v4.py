@@ -1,7 +1,6 @@
 """
-Chess-JEPA v4: same encoder / JEPA / from-to heads as v3, but move-head prefix uses a
-scalar ``move_head_prefix_leak`` blend instead of a binary stopgrad, plus optional
-detached-prefix auxiliary probes (board reconstruction, meta rights).
+Chess-JEPA v4: same encoder / JEPA / from-to heads as v3, plus optional auxiliary
+tasks (board reconstruction, meta rights) on the full global embedding.
 """
 
 from __future__ import annotations
@@ -31,15 +30,13 @@ DEFAULT_ARCHITECTURE_CONFIG: dict[str, Any] = {
     "dim_feedforward": 1024,
     "dropout": 0.1,
     "use_cls": True,
-    "predictor_prefix_dims": 64,
     "jepa_square_embed_dim": 64,
     "predictor_hidden": 512,
     "predictor_depth": 2,
     "from_to_head_hidden": 256,
     "from_to_head_depth": 2,
-    "move_head_prefix_leak": 0.0,
-    "probe_board_recon_hidden": 256,
-    "probe_meta_hidden": 128,
+    "aux_board_recon_hidden": 256,
+    "aux_meta_hidden": 128,
 }
 
 
@@ -51,22 +48,15 @@ def resolve_architecture_config(user: dict[str, Any] | None) -> dict[str, Any]:
     cfg["dim_feedforward"] = int(cfg["dim_feedforward"])
     cfg["dropout"] = float(cfg["dropout"])
     cfg["use_cls"] = bool(cfg["use_cls"])
-    cfg["predictor_prefix_dims"] = int(cfg["predictor_prefix_dims"])
     cfg["jepa_square_embed_dim"] = int(cfg["jepa_square_embed_dim"])
     cfg["predictor_hidden"] = int(cfg["predictor_hidden"])
     cfg["predictor_depth"] = int(cfg["predictor_depth"])
     cfg["from_to_head_hidden"] = int(cfg["from_to_head_hidden"])
     cfg["from_to_head_depth"] = int(cfg["from_to_head_depth"])
-    cfg["move_head_prefix_leak"] = float(cfg["move_head_prefix_leak"])
-    cfg["probe_board_recon_hidden"] = int(cfg["probe_board_recon_hidden"])
-    cfg["probe_meta_hidden"] = int(cfg["probe_meta_hidden"])
+    cfg["aux_board_recon_hidden"] = int(cfg["aux_board_recon_hidden"])
+    cfg["aux_meta_hidden"] = int(cfg["aux_meta_hidden"])
     if cfg["d_model"] % cfg["nhead"] != 0:
         raise ValueError("d_model must be divisible by nhead")
-    if cfg["predictor_prefix_dims"] < 1 or cfg["predictor_prefix_dims"] > cfg["d_model"]:
-        raise ValueError(
-            f"predictor_prefix_dims must be in [1, d_model]; "
-            f"got {cfg['predictor_prefix_dims']} vs d_model={cfg['d_model']}"
-        )
     if cfg["jepa_square_embed_dim"] < 1:
         raise ValueError(f"jepa_square_embed_dim must be >= 1 (got {cfg['jepa_square_embed_dim']})")
     if cfg["predictor_depth"] < 1:
@@ -75,41 +65,37 @@ def resolve_architecture_config(user: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError(f"from_to_head_hidden must be >= 1 (got {cfg['from_to_head_hidden']})")
     if cfg["from_to_head_depth"] < 1:
         raise ValueError(f"from_to_head_depth must be >= 1 (got {cfg['from_to_head_depth']})")
-    if not (0.0 <= cfg["move_head_prefix_leak"] <= 1.0):
-        raise ValueError(f"move_head_prefix_leak must be in [0, 1], got {cfg['move_head_prefix_leak']}")
-    if cfg["probe_board_recon_hidden"] < 1:
-        raise ValueError("probe_board_recon_hidden must be >= 1")
-    if cfg["probe_meta_hidden"] < 1:
-        raise ValueError("probe_meta_hidden must be >= 1")
+    if cfg["aux_board_recon_hidden"] < 1:
+        raise ValueError("aux_board_recon_hidden must be >= 1")
+    if cfg["aux_meta_hidden"] < 1:
+        raise ValueError("aux_meta_hidden must be >= 1")
     return cfg
 
 
-class BoardReconProbe(nn.Module):
-    """Detached-prefix MLP -> (B, 64, 13) piece logits."""
+class BoardReconAux(nn.Module):
+    """MLP on full global embedding -> (B, 64, 13) piece logits."""
 
-    def __init__(self, prefix_dim: int, hidden: int) -> None:
+    def __init__(self, d_model: int, hidden: int) -> None:
         super().__init__()
-        if prefix_dim != 64:
-            raise ValueError(f"v4 board recon probe requires predictor_prefix_dims==64, got {prefix_dim}")
-        self.net = _mlp_gelu(prefix_dim, hidden, 2, 64 * 13)
+        self.net = _mlp_gelu(d_model, hidden, 2, 64 * 13)
 
-    def forward(self, z_prefix_det: torch.Tensor) -> torch.Tensor:
-        logits_flat = self.net(z_prefix_det)
-        return logits_flat.view(z_prefix_det.shape[0], 64, 13)
+    def forward(self, z_global: torch.Tensor) -> torch.Tensor:
+        logits_flat = self.net(z_global)
+        return logits_flat.view(z_global.shape[0], 64, 13)
 
 
-class MetaProbe(nn.Module):
+class MetaAux(nn.Module):
     """Turn (BCE), castling x4 (BCE), en passant 65-class CE."""
 
-    def __init__(self, prefix_dim: int, hidden: int) -> None:
+    def __init__(self, d_model: int, hidden: int) -> None:
         super().__init__()
-        self.backbone = _mlp_gelu(prefix_dim, hidden, 2, hidden)
+        self.backbone = _mlp_gelu(d_model, hidden, 2, hidden)
         self.head_turn = nn.Linear(hidden, 1)
         self.head_castle = nn.Linear(hidden, 4)
         self.head_ep = nn.Linear(hidden, 65)
 
-    def forward(self, z_prefix_det: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        h = self.backbone(z_prefix_det)
+    def forward(self, z_global: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        h = self.backbone(z_global)
         return self.head_turn(h), self.head_castle(h), self.head_ep(h)
 
 
@@ -119,7 +105,6 @@ class ChessJEPAV4(nn.Module):
         self.cfg = cfg
         d = cfg["d_model"]
         e = int(cfg["jepa_square_embed_dim"])
-        p = int(cfg["predictor_prefix_dims"])
         enc_kw = dict(
             d_model=d,
             n_layers=cfg["encoder_layers"],
@@ -136,7 +121,7 @@ class ChessJEPAV4(nn.Module):
         self.jepa_to_embed = nn.Embedding(64, e)
         self.from_slot_unknown = nn.Parameter(torch.zeros(e))
         self.jepa_predictor = JepaMlpPredictor(
-            output_dims=p,
+            output_dims=d,
             d_model=d,
             square_embed_dim=e,
             hidden=int(cfg["predictor_hidden"]),
@@ -152,8 +137,8 @@ class ChessJEPAV4(nn.Module):
             hidden=int(cfg["from_to_head_hidden"]),
             depth=int(cfg["from_to_head_depth"]),
         )
-        self.probe_board_recon = BoardReconProbe(p, int(cfg["probe_board_recon_hidden"]))
-        self.probe_meta = MetaProbe(p, int(cfg["probe_meta_hidden"]))
+        self.aux_board_recon = BoardReconAux(d, int(cfg["aux_board_recon_hidden"]))
+        self.aux_meta = MetaAux(d, int(cfg["aux_meta_hidden"]))
 
     def train(self, mode: bool = True) -> ChessJEPAV4:
         super().train(mode)
@@ -169,8 +154,8 @@ class ChessJEPAV4(nn.Module):
             + list(self.jepa_from_embed.parameters())
             + list(self.jepa_to_embed.parameters())
             + [self.from_slot_unknown]
-            + list(self.probe_board_recon.parameters())
-            + list(self.probe_meta.parameters())
+            + list(self.aux_board_recon.parameters())
+            + list(self.aux_meta.parameters())
         )
 
     @torch.no_grad()
@@ -206,30 +191,13 @@ class ChessJEPAV4(nn.Module):
     def encode_target_global(self, board: torch.Tensor) -> torch.Tensor:
         return self.encoder_target(board)
 
-    def _z_global_for_move_heads(self, z_global: torch.Tensor, *, leak: float) -> torch.Tensor:
-        lam = float(leak)
-        lam = max(0.0, min(1.0, lam))
-        p = int(self.cfg["predictor_prefix_dims"])
-        d = int(z_global.shape[-1])
-        if d <= p:
-            return z_global
-        pref = z_global[:, :p]
-        blended = (1.0 - lam) * pref.detach() + lam * pref
-        return torch.cat([blended, z_global[:, p:]], dim=-1)
+    def forward_from_logits(self, z_global: torch.Tensor) -> torch.Tensor:
+        return self.from_square_head(z_global)
 
-    def forward_from_logits(self, z_global: torch.Tensor, *, move_head_prefix_leak: float | None = None) -> torch.Tensor:
-        lam = float(self.cfg["move_head_prefix_leak"]) if move_head_prefix_leak is None else float(move_head_prefix_leak)
-        z_in = self._z_global_for_move_heads(z_global, leak=lam)
-        return self.from_square_head(z_in)
+    def forward_to_logits(self, z_global: torch.Tensor, from_sq: torch.Tensor) -> torch.Tensor:
+        return self.to_square_head(z_global, from_sq)
 
-    def forward_to_logits(
-        self, z_global: torch.Tensor, from_sq: torch.Tensor, *, move_head_prefix_leak: float | None = None
-    ) -> torch.Tensor:
-        lam = float(self.cfg["move_head_prefix_leak"]) if move_head_prefix_leak is None else float(move_head_prefix_leak)
-        z_in = self._z_global_for_move_heads(z_global, leak=lam)
-        return self.to_square_head(z_in, from_sq)
-
-    def forward_aux_losses(
+    def forward_prefix_aux_losses(
         self,
         board: torch.Tensor,
         z_global: torch.Tensor,
@@ -237,24 +205,38 @@ class ChessJEPAV4(nn.Module):
         compute_board_recon: bool,
         compute_meta: bool,
     ) -> dict[str, torch.Tensor]:
-        """Detached-prefix probes only; encoder does not receive grads from these losses."""
+        """Auxiliary losses on the full global embedding; gradients flow into ``encoder_online``.
+
+        Returns ``aux_board_recon`` (scalar CE) and ``aux_board_recon_top1`` (mean % correct
+        squares, 0--100) when board recon runs. When meta runs: ``aux_meta`` plus
+        ``aux_meta_turn_top1``, ``aux_meta_castle_top1``, ``aux_meta_ep_top1``, and
+        ``aux_meta_top1`` (mean of the three, 0--100 each).
+        """
         out: dict[str, torch.Tensor] = {}
-        p = int(self.cfg["predictor_prefix_dims"])
-        if p != 64:
-            return out
-        z_prefix = z_global[:, :p].detach()
         if compute_board_recon:
-            logits = self.probe_board_recon(z_prefix)
+            logits = self.aux_board_recon(z_global)
             labels = piece_labels_64_from_board(board)
             ce = F.cross_entropy(logits.reshape(-1, 13), labels.reshape(-1))
-            out["probe_board_recon"] = ce
+            out["aux_board_recon"] = ce
+            pred_sq = logits.argmax(dim=-1)
+            br_top1 = (pred_sq == labels).float().mean() * 100.0
+            out["aux_board_recon_top1"] = br_top1
         if compute_meta:
-            turn_l, castle_l, ep_l = self.probe_meta(z_prefix)
+            turn_l, castle_l, ep_l = self.aux_meta(z_global)
             meta = meta_targets_from_board(board)
             loss_turn = F.binary_cross_entropy_with_logits(turn_l.squeeze(-1), meta["turn"])
             loss_castle = F.binary_cross_entropy_with_logits(castle_l, meta["castle"])
             loss_ep = F.cross_entropy(ep_l, meta["ep_class"])
-            out["probe_meta"] = loss_turn + loss_castle + loss_ep
+            out["aux_meta"] = loss_turn + loss_castle + loss_ep
+            turn_pred = (torch.sigmoid(turn_l.squeeze(-1)) > 0.5).float()
+            turn_top1 = (turn_pred == meta["turn"]).float().mean() * 100.0
+            castle_pred = (torch.sigmoid(castle_l) > 0.5).float()
+            castle_top1 = (castle_pred == meta["castle"]).all(dim=-1).float().mean() * 100.0
+            ep_top1 = (ep_l.argmax(dim=-1) == meta["ep_class"]).float().mean() * 100.0
+            out["aux_meta_turn_top1"] = turn_top1
+            out["aux_meta_castle_top1"] = castle_top1
+            out["aux_meta_ep_top1"] = ep_top1
+            out["aux_meta_top1"] = (turn_top1 + castle_top1 + ep_top1) / 3.0
         return out
 
 

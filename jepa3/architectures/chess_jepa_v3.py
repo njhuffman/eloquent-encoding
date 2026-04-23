@@ -1,10 +1,7 @@
 """
 Chess-JEPA v3: encoder exposes CLS/GAP (B, d_model). JEPA MLP uses that plus
-learned from/to slot embeddings (two tables of 64). From/to CE heads use global + indices.
-
-Move-head prefix uses ``move_head_prefix_leak`` λ in ``[0, 1]`` (training config per stage):
-``(1-λ)·detach(z[:,:P]) + λ·z[:,:P]`` with tail ``z[:,P:]`` unchanged. λ=0 matches full
-prefix stopgrad for CE; λ=1 matches no prefix stopgrad.
+learned from/to slot embeddings (two tables of 64). From/to CE heads use the full
+global vector. The JEPA predictor outputs the full d_model invariance target.
 """
 
 from __future__ import annotations
@@ -26,13 +23,11 @@ DEFAULT_ARCHITECTURE_CONFIG: dict[str, Any] = {
     "dim_feedforward": 1024,
     "dropout": 0.1,
     "use_cls": True,
-    "predictor_prefix_dims": 64,
     "jepa_square_embed_dim": 64,
     "predictor_hidden": 512,
     "predictor_depth": 2,
     "from_to_head_hidden": 256,
     "from_to_head_depth": 2,
-    "move_head_prefix_leak": 0.0,
 }
 
 
@@ -44,22 +39,13 @@ def resolve_architecture_config(user: dict[str, Any] | None) -> dict[str, Any]:
     cfg["dim_feedforward"] = int(cfg["dim_feedforward"])
     cfg["dropout"] = float(cfg["dropout"])
     cfg["use_cls"] = bool(cfg["use_cls"])
-    cfg["predictor_prefix_dims"] = int(cfg["predictor_prefix_dims"])
     cfg["jepa_square_embed_dim"] = int(cfg["jepa_square_embed_dim"])
     cfg["predictor_hidden"] = int(cfg["predictor_hidden"])
     cfg["predictor_depth"] = int(cfg["predictor_depth"])
     cfg["from_to_head_hidden"] = int(cfg["from_to_head_hidden"])
     cfg["from_to_head_depth"] = int(cfg["from_to_head_depth"])
-    cfg["move_head_prefix_leak"] = float(cfg.get("move_head_prefix_leak", 0.0))
-    if not (0.0 <= cfg["move_head_prefix_leak"] <= 1.0):
-        raise ValueError(f"move_head_prefix_leak must be in [0, 1], got {cfg['move_head_prefix_leak']}")
     if cfg["d_model"] % cfg["nhead"] != 0:
         raise ValueError("d_model must be divisible by nhead")
-    if cfg["predictor_prefix_dims"] < 1 or cfg["predictor_prefix_dims"] > cfg["d_model"]:
-        raise ValueError(
-            f"predictor_prefix_dims must be in [1, d_model] (JEPA predictor output width / target prefix); "
-            f"got {cfg['predictor_prefix_dims']} vs d_model={cfg['d_model']}"
-        )
     if cfg["jepa_square_embed_dim"] < 1:
         raise ValueError(f"jepa_square_embed_dim must be >= 1 (got {cfg['jepa_square_embed_dim']})")
     if cfg["predictor_depth"] < 1:
@@ -149,7 +135,7 @@ class BoardEncoderV3(nn.Module):
 
 
 class JepaMlpPredictor(nn.Module):
-    """MLP on concat(z_global, e_from, e_to) -> P dimensions (invariance target prefix)."""
+    """MLP on concat(z_global, e_from, e_to) -> d_model (invariance target)."""
 
     def __init__(
         self,
@@ -231,7 +217,7 @@ class ChessJEPAV3(nn.Module):
         self.jepa_to_embed = nn.Embedding(64, e)
         self.from_slot_unknown = nn.Parameter(torch.zeros(e))
         self.jepa_predictor = JepaMlpPredictor(
-            output_dims=int(cfg["predictor_prefix_dims"]),
+            output_dims=d,
             d_model=d,
             square_embed_dim=e,
             hidden=int(cfg["predictor_hidden"]),
@@ -301,28 +287,11 @@ class ChessJEPAV3(nn.Module):
     def encode_target_global(self, board: torch.Tensor) -> torch.Tensor:
         return self.encoder_target(board)
 
-    def _z_global_for_move_heads(self, z_global: torch.Tensor, *, leak: float) -> torch.Tensor:
-        lam = float(leak)
-        lam = max(0.0, min(1.0, lam))
-        p = int(self.cfg["predictor_prefix_dims"])
-        d = int(z_global.shape[-1])
-        if d <= p:
-            return z_global
-        pref = z_global[:, :p]
-        blended = (1.0 - lam) * pref.detach() + lam * pref
-        return torch.cat([blended, z_global[:, p:]], dim=-1)
+    def forward_from_logits(self, z_global: torch.Tensor) -> torch.Tensor:
+        return self.from_square_head(z_global)
 
-    def forward_from_logits(self, z_global: torch.Tensor, *, move_head_prefix_leak: float | None = None) -> torch.Tensor:
-        lam = float(self.cfg["move_head_prefix_leak"]) if move_head_prefix_leak is None else float(move_head_prefix_leak)
-        z_in = self._z_global_for_move_heads(z_global, leak=lam)
-        return self.from_square_head(z_in)
-
-    def forward_to_logits(
-        self, z_global: torch.Tensor, from_sq: torch.Tensor, *, move_head_prefix_leak: float | None = None
-    ) -> torch.Tensor:
-        lam = float(self.cfg["move_head_prefix_leak"]) if move_head_prefix_leak is None else float(move_head_prefix_leak)
-        z_in = self._z_global_for_move_heads(z_global, leak=lam)
-        return self.to_square_head(z_in, from_sq)
+    def forward_to_logits(self, z_global: torch.Tensor, from_sq: torch.Tensor) -> torch.Tensor:
+        return self.to_square_head(z_global, from_sq)
 
 
 class ChessJEPAV3Builder:

@@ -45,19 +45,19 @@ dashboard_metrics:
 pip install -r requirements-dashboard.txt
 ```
 
-**Run** (default **port 8765**; binds to localhost unless you override host):
+**Run** (default **port 8642**; binds to localhost unless you override host):
 
 ```bash
-python -m jepa.dashboard --host 127.0.0.1 --port 8765
+python -m jepa.dashboard --host 127.0.0.1 --port 8642
 ```
 
-Open `http://127.0.0.1:8765/` in a browser.
+Open `http://127.0.0.1:8642/` in a browser.
 
 **Tailscale / remote access:** listen on all interfaces so the service is reachable on your Tailscale IP (still only peers on your tailnet). The API can start local training jobs — use Tailscale ACLs and do not expose this to the public internet.
 
 ```bash
-python -m jepa.dashboard --host 0.0.0.0 --port 8765
+python -m jepa.dashboard --host 0.0.0.0 --port 8642
 # or: JEPA_DASHBOARD_HOST=0.0.0.0 python -m jepa.dashboard
 ```
 
-Then open `http://<this-machine-tailscale-ip>:8765/` from another device on your tailnet (for example the IPv4 from `tailscale ip -4` on the host).
+Then open `http://<this-machine-tailscale-ip>:8642/` from another device on your tailnet (for example the IPv4 from `tailscale ip -4` on the host).

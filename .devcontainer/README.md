@@ -6,17 +6,17 @@
   `devcontainer up --workspace-folder . --remove-existing-container`
 - **Recreate container after changing `mounts`:** Same as above—rebuild/reopen so Docker attaches the named volume.
 
-## JEPA dashboard port (8765)
+## JEPA dashboard port (8642)
 
-The devcontainer publishes **container port 8765** to the host as **`0.0.0.0:8765`** (`runArgs`: `-p 8765:8765`). After rebuild/reopen, you can reach the dashboard from other machines on your LAN or Tailscale using **`http://<host-ip>:8765/`**, as long as the host firewall allows inbound TCP 8765.
+The devcontainer publishes **container port 8642** to the host as **`0.0.0.0:8642`** (`runArgs`: `-p 8642:8642`). After rebuild/reopen, you can reach the dashboard from other machines on your LAN or Tailscale using **`http://<host-ip>:8642/`**, as long as the host firewall allows inbound TCP 8642.
 
 Start the app inside the container with a non-loopback bind (dashboard deps are installed in the image and refreshed on `postCreateCommand`):
 
 ```bash
-python -m jepa.dashboard --host 0.0.0.0 --port 8765
+python -m jepa.dashboard --host 0.0.0.0 --port 8642
 ```
 
-If something else on the host already uses 8765, change the left side of the publish mapping in `devcontainer.json` (e.g. `-p`, `8876:8765`).
+If something else on the host already uses 8642, change the left side of the publish mapping in `devcontainer.json` (e.g. `-p`, `8876:8642`).
 
 ## Bulk data volume (`eloquence-bulk`)
 

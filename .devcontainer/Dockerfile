@@ -1,8 +1,8 @@
 # Use official Python devcontainer image
 FROM mcr.microsoft.com/devcontainers/python:3.11
 
-# JEPA dashboard (uvicorn); published to the host via devcontainer.json runArgs -p 8765:8765
-EXPOSE 8765
+# JEPA dashboard (uvicorn); published to the host via devcontainer.json runArgs -p 8642:8642
+EXPOSE 8642
 
 # Install system deps for h5py (HDF5)
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \

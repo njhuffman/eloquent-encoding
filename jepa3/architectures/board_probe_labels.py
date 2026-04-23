@@ -1,4 +1,4 @@
-"""Targets for chess_jepa_v4 board reconstruction and meta probes from (B, 8, 8, 18) tensors."""
+"""Targets for chess_jepa_v4 board reconstruction and meta aux tasks from (B, 8, 8, 18) tensors."""
 
 from __future__ import annotations
 

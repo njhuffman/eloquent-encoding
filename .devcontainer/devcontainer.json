@@ -4,10 +4,10 @@
     "context": "..",
     "dockerfile": "Dockerfile"
   },
-  "runArgs": ["--gpus", "all", "-p", "8765:8765"],
-  "forwardPorts": [8765],
+  "runArgs": ["--gpus", "all", "-p", "8642:8642"],
+  "forwardPorts": [8642],
   "portsAttributes": {
-    "8765": {
+    "8642": {
       "label": "JEPA training dashboard",
       "onAutoForward": "notify"
     }
