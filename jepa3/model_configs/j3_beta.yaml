@@ -1,5 +1,6 @@
 name: j3_beta
 checkpoint_dir: jepa3_checkpoints/j3_beta
+# HDF5: jepa3 packed format only (`python -m jepa3.packed_build build --recipe ... --data-dir ... --output-dir ...`).
 train_move_dataset_h5: databases/moves/training_moves_1M.h5
 val_move_dataset_h5: databases/moves/validation_moves_1M.h5
 

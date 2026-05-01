@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-jepa3 training: streaming move HDF5, JEPA+VICReg + from/to square CE.
+jepa3 training: packed move HDF5 (see ``python -m jepa3.packed_build``), JEPA+VICReg + from/to square CE.
 
   python -m jepa3.train --model NAME --stage 0     # init -> NAME_stage_0.pt
   python -m jepa3.train --model NAME --stage 1     # load stage_0, train stage 1 using stages[0]
@@ -22,20 +22,19 @@ from jepa.h5_bootstrap import apply_hdf5_read_safety_env
 
 apply_hdf5_read_safety_env()
 
-import h5py
 import torch
 
-from jepa2.dataset import make_loader, sample_row_indices
 from jepa3.checkpoint_paths import stage_checkpoint_path
 from jepa3.load import load_jepa3_from_checkpoint
 from jepa3.metrics_paths import stage_metrics_json_path
 from jepa3.model_spec import load_model_spec, resolve_training_config_for_stage, spec_path_for_model
+from jepa3.packed_dataset import make_packed_loader, sample_row_indices
+from jepa3.packed_h5 import packed_h5_row_count
 from jepa3.training_loop import init_stage_zero, run_training_epochs, save_stage_checkpoint, write_stage_metrics_json
 
 
 def _h5_n_rows(path: Path) -> int:
-    with h5py.File(path, "r") as f:
-        return int(f["fen"].shape[0])
+    return packed_h5_row_count(path)
 
 
 def cmd_init(spec: dict, device: torch.device) -> int:
@@ -75,7 +74,7 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
 
     nw = int(resolved.get("dataloader_num_workers", 0))
     bs = int(resolved["train"]["batch_size"])
-    train_loader = make_loader(
+    train_loader = make_packed_loader(
         train_h5,
         train_idx,
         batch_size=bs,
@@ -83,7 +82,7 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
         num_workers=nw,
         seed=int(st["sample"]["seed"]),
     )
-    val_loader = make_loader(
+    val_loader = make_packed_loader(
         val_h5,
         val_idx,
         batch_size=bs,
@@ -140,7 +139,7 @@ def cmd_train_stage(spec: dict, stage: int, device: torch.device) -> int:
         stage=stage,
         resolved=resolved,
         train_meta={
-            "storage": "streaming",
+            "storage": "packed_hdf5",
             "n_train_rows": int(train_idx.shape[0]),
             "n_val_rows": int(val_idx.shape[0]),
             "train_h5": str(train_h5),

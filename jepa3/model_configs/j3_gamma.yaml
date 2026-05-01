@@ -1,7 +1,8 @@
 name: j3_gamma
 checkpoint_dir: jepa3_checkpoints/j3_gamma
-train_move_dataset_h5: databases/moves/training_moves_1M.h5
-val_move_dataset_h5: databases/moves/validation_moves_1M.h5
+# HDF5: jepa3 packed format only (`python -m jepa3.packed_build build --recipe ... --data-dir ... --output-dir ...`).
+train_move_dataset_h5: /mnt/eloquence_bulk/databases/j3_training_1M.h5
+val_move_dataset_h5: /mnt/eloquence_bulk/databases/j3_validation_1M.h5
 
 val_sample:
   n: 10
@@ -46,11 +47,37 @@ architecture:
 
 stages:
 
+  # Phase 1. Goal: ground the model in good reconstruction loss
+  # Looking for 99% reconstruction before the end so we see good
+  # scores on boards not yet memorized.
   - sample:
-      n: 2024
+      n: 1000000
       seed: 1
     train:
-      epochs: 50
+      epochs: 1
+      gradient_accumulation_steps: 1
+      learning_rate: 0.0005
+      weight_decay: 0.01
+    ema_momentum: 0.999
+    jepa_weight: 0.01
+    from_sq_ce_weight: 0.01
+    to_sq_ce_weight: 0.01
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 0.01
+      var_coef: 0.01
+      cov_coef: 0.01
+      std_target: 1.0
+    aux_board_recon_weight: 10.0
+    aux_meta_weight: 1.0
+    
+    
+  # Phase 2. Goal: improve prediction losses
+  - sample:
+      n: 1000000
+      seed: 1
+    train:
+      epochs: 1
       gradient_accumulation_steps: 1
       learning_rate: 0.0005
       weight_decay: 0.01
@@ -60,12 +87,37 @@ stages:
     to_sq_ce_weight: 1.0
     sq_ce_label_smoothing: 0.1
     vicreg:
-      inv_coef: 0.1
-      var_coef: 1.0
-      cov_coef: 1.0
+      inv_coef: 0.01
+      var_coef: 0.01
+      cov_coef: 0.01
       std_target: 1.0
-    aux_board_recon_weight: 1.0 # 1.0
-    aux_meta_weight: 0.1
+    aux_board_recon_weight: 1.0
+    aux_meta_weight: 1.0
+  # aftee this, already seeing like 35% move prediction,
+  # guessing likely overfit and should scale up
+  - sample:
+      n: 1000000
+      seed: 1
+    train:
+      epochs: 5
+      gradient_accumulation_steps: 1
+      learning_rate: 0.0005
+      weight_decay: 0.01
+    ema_momentum: 0.999
+    jepa_weight: 1.0
+    from_sq_ce_weight: 1.0
+    to_sq_ce_weight: 1.0
+    sq_ce_label_smoothing: 0.1
+    vicreg:
+      inv_coef: 0.01
+      var_coef: 0.01
+      cov_coef: 0.01
+      std_target: 1.0
+    aux_board_recon_weight: 1.0
+    aux_meta_weight: 1.0
+
+
+
   - sample:
       n: 4024
       seed: 1

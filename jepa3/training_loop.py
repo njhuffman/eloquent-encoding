@@ -24,7 +24,6 @@ from jepa.checkpoint_utils import build_model_checkpoint
 from jepa2.gsnr_probe import flatten_encoder_online_grads, gsnr_metrics_from_grad_vectors
 from jepa2.sam import sam_apply_perturbation, sam_build_perturbations, sam_revert_perturbation
 from jepa3.architectures import resolve_config_for_id
-from jepa3.batch_aux import legal_masks_np, post_move_boards_np
 from jepa3.checkpoint_paths import stage_checkpoint_path
 from jepa3.loss import jepa3_loss_forward
 
@@ -221,8 +220,11 @@ def _run_encoder_gsnr_probe(
         }
     grads_cpu: list[torch.Tensor] = []
     for tup in buffer:
-        board_t, elo, fs, ts, pr, fens, ep, micro_bi = tup
+        board_t, board_post, from_mask, to_mask, elo, fs, ts, pr, ep, micro_bi = tup
         board_t = board_t.to(device, non_blocking=True)
+        board_post = board_post.to(device, non_blocking=True)
+        from_mask = from_mask.to(device, non_blocking=True)
+        to_mask = to_mask.to(device, non_blocking=True)
         elo = elo.to(device, non_blocking=True)
         fs = fs.to(device, non_blocking=True)
         ts = ts.to(device, non_blocking=True)
@@ -235,11 +237,13 @@ def _run_encoder_gsnr_probe(
                 loss, _ = _forward_batch(
                     model,
                     board_t,
+                    board_post,
+                    from_mask,
+                    to_mask,
                     elo,
                     fs,
                     ts,
                     pr,
-                    fens,
                     resolved,
                     train=True,
                     rng=rng,
@@ -252,11 +256,13 @@ def _run_encoder_gsnr_probe(
             loss, _ = _forward_batch(
                 model,
                 board_t,
+                board_post,
+                from_mask,
+                to_mask,
                 elo,
                 fs,
                 ts,
                 pr,
-                fens,
                 resolved,
                 train=True,
                 rng=rng,
@@ -296,38 +302,16 @@ def _between_step_grad_vectors_for_gsnr(
     return lst
 
 
-def _batch_to_rows(
-    board_t: torch.Tensor,
-    elo: torch.Tensor,
-    fs: torch.Tensor,
-    ts: torch.Tensor,
-    pr: torch.Tensor,
-    fens: list[str],
-) -> list[dict[str, Any]]:
-    b = int(board_t.shape[0])
-    rows: list[dict[str, Any]] = []
-    for i in range(b):
-        rows.append(
-            {
-                "board_t": board_t[i].detach().cpu().numpy(),
-                "elo_to_move": float(elo[i].item()),
-                "from_sq": int(fs[i].item()),
-                "to_sq": int(ts[i].item()),
-                "promotion": int(pr[i].item()),
-                "fen": fens[i],
-            }
-        )
-    return rows
-
-
 def _forward_batch(
     model: torch.nn.Module,
     board_t: torch.Tensor,
+    board_post: torch.Tensor,
+    from_mask: torch.Tensor,
+    to_mask: torch.Tensor,
     elo: torch.Tensor,
     fs: torch.Tensor,
     ts: torch.Tensor,
     pr: torch.Tensor,
-    fens: list[str],
     resolved: dict[str, Any],
     *,
     train: bool,
@@ -336,14 +320,10 @@ def _forward_batch(
     use_amp: bool,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     del rng
-    rows = _batch_to_rows(board_t, elo, fs, ts, pr, fens)
-    post_np = post_move_boards_np(rows)
-    from_m_np, to_m_np = legal_masks_np(rows)
-
     board_t = board_t.to(device, non_blocking=True)
-    board_post = torch.from_numpy(post_np).to(device, non_blocking=True)
-    from_mask = torch.from_numpy(from_m_np).to(device, non_blocking=True)
-    to_mask = torch.from_numpy(to_m_np).to(device, non_blocking=True)
+    board_post = board_post.to(device, non_blocking=True)
+    from_mask = from_mask.to(device, non_blocking=True)
+    to_mask = to_mask.to(device, non_blocking=True)
     fs_dev = fs.to(device, non_blocking=True, dtype=torch.long)
     ts_dev = ts.to(device, non_blocking=True, dtype=torch.long)
 
@@ -453,16 +433,18 @@ def compute_epoch_metrics_inference(
     if include_train:
         model.train()
         with torch.no_grad():
-            for bi, (board_t, elo, fs, ts, pr, fens) in enumerate(train_loader):
+            for bi, (board_t, board_post, from_mask, to_mask, elo, fs, ts, pr) in enumerate(train_loader):
                 rng = random.Random(val_seed + epoch * 1_000_003 + bi)
                 _, m = _forward_batch(
                     model,
                     board_t,
+                    board_post,
+                    from_mask,
+                    to_mask,
                     elo,
                     fs,
                     ts,
                     pr,
-                    fens,
                     resolved,
                     train=True,
                     rng=rng,
@@ -473,16 +455,18 @@ def compute_epoch_metrics_inference(
 
     model.eval()
     with torch.no_grad():
-        for bi, (board_t, elo, fs, ts, pr, fens) in enumerate(val_loader):
+        for bi, (board_t, board_post, from_mask, to_mask, elo, fs, ts, pr) in enumerate(val_loader):
             rng = random.Random(val_seed + epoch * 1_000_003 + 50_000 + bi)
             _, m = _forward_batch(
                 model,
                 board_t,
+                board_post,
+                from_mask,
+                to_mask,
                 elo,
                 fs,
                 ts,
                 pr,
-                fens,
                 resolved,
                 train=False,
                 rng=rng,
@@ -557,7 +541,7 @@ def run_training_epochs(
         accum_ms: list[dict[str, float]] = []
         micro_lo = 0
 
-        for bi, (board_t, elo, fs, ts, pr, fens) in enumerate(train_loader):
+        for bi, (board_t, board_post, from_mask, to_mask, elo, fs, ts, pr) in enumerate(train_loader):
             rng = random.Random(global_step_seed + epoch * 1_000_000 + bi)
             if micro_in_accum == 0:
                 optimizer.zero_grad(set_to_none=True)
@@ -571,11 +555,13 @@ def run_training_epochs(
                     loss, m = _forward_batch(
                         model,
                         board_t,
+                        board_post,
+                        from_mask,
+                        to_mask,
                         elo,
                         fs,
                         ts,
                         pr,
-                        fens,
                         resolved,
                         train=True,
                         rng=rng,
@@ -587,11 +573,13 @@ def run_training_epochs(
                 loss, m = _forward_batch(
                     model,
                     board_t,
+                    board_post,
+                    from_mask,
+                    to_mask,
                     elo,
                     fs,
                     ts,
                     pr,
-                    fens,
                     resolved,
                     train=True,
                     rng=rng,
@@ -610,11 +598,13 @@ def run_training_epochs(
                 replay_batch_window.append(
                     (
                         board_t.detach().cpu(),
+                        board_post.detach().cpu(),
+                        from_mask.detach().cpu(),
+                        to_mask.detach().cpu(),
                         elo.detach().cpu(),
                         fs.detach().cpu(),
                         ts.detach().cpu(),
                         pr.detach().cpu(),
-                        list(fens),
                         epoch,
                         bi,
                     )
@@ -639,8 +629,11 @@ def run_training_epochs(
                         sam_apply_perturbation(perturbations)
                         optimizer.zero_grad(set_to_none=True)
                         for tup in replay_batches:
-                            board_t2, elo2, fs2, ts2, pr2, fens2, ep, micro_bi = tup
+                            board_t2, board_post2, from_m2, to_m2, elo2, fs2, ts2, pr2, ep, micro_bi = tup
                             board_t2 = board_t2.to(device, non_blocking=True)
+                            board_post2 = board_post2.to(device, non_blocking=True)
+                            from_m2 = from_m2.to(device, non_blocking=True)
+                            to_m2 = to_m2.to(device, non_blocking=True)
                             elo2 = elo2.to(device, non_blocking=True)
                             fs2 = fs2.to(device, non_blocking=True)
                             ts2 = ts2.to(device, non_blocking=True)
@@ -652,11 +645,13 @@ def run_training_epochs(
                                     loss2, _ = _forward_batch(
                                         model,
                                         board_t2,
+                                        board_post2,
+                                        from_m2,
+                                        to_m2,
                                         elo2,
                                         fs2,
                                         ts2,
                                         pr2,
-                                        fens2,
                                         resolved,
                                         train=True,
                                         rng=rng,
@@ -668,11 +663,13 @@ def run_training_epochs(
                                 loss2, _ = _forward_batch(
                                     model,
                                     board_t2,
+                                    board_post2,
+                                    from_m2,
+                                    to_m2,
                                     elo2,
                                     fs2,
                                     ts2,
                                     pr2,
-                                    fens2,
                                     resolved,
                                     train=True,
                                     rng=rng,
