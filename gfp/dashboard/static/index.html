@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>gfp training dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #5b9fd4;
+      --border: #2a3544;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      line-height: 1.45;
+    }
+    header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header h1 { margin: 0; font-size: 1.2rem; font-weight: 600; }
+    header p { margin: 0.4rem 0 0; color: var(--muted); font-size: 0.85rem; }
+    main { padding: 1.25rem; max-width: 1100px; margin: 0 auto; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+    label { color: var(--muted); font-size: 0.85rem; margin-right: 0.5rem; }
+    select {
+      background: var(--bg);
+      border: 1px solid #334155;
+      color: var(--text);
+      padding: 0.45rem 0.75rem;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      min-width: 14rem;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; }
+    tr:hover td { background: rgba(91, 159, 212, 0.06); }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .err { color: #f87171; }
+    .muted { color: var(--muted); font-size: 0.8rem; }
+    #chart-wrap { max-width: 640px; height: 260px; margin-top: 0.5rem; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>gfp training dashboard</h1>
+    <p>Read-only view of YAML specs, checkpoints, and per-stage metrics under each model’s <code>checkpoint_dir</code>.</p>
+  </header>
+  <main>
+    <div class="panel">
+      <label for="model">Model</label>
+      <select id="model"><option value="">— load —</option></select>
+      <span id="status" class="muted" style="margin-left:1rem;"></span>
+    </div>
+    <div id="meta" class="panel hidden"></div>
+    <div class="panel">
+      <h2 style="margin:0 0 0.75rem;font-size:1rem;">Best val loss by stage</h2>
+      <div id="chart-wrap"><canvas id="lossChart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2 style="margin:0 0 0.75rem;font-size:1rem;">Stages</h2>
+      <div id="table-wrap"></div>
+    </div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let chart = null;
+
+    function fmt(x) {
+      if (x === null || x === undefined) return "—";
+      if (typeof x === "number" && Number.isFinite(x)) return x.toFixed(4);
+      return String(x);
+    }
+
+    function fmtPct(x) {
+      if (x === null || x === undefined || !Number.isFinite(x)) return "—";
+      return x.toFixed(2) + "%";
+    }
+
+    async function loadModels() {
+      const sel = $("model");
+      const r = await fetch("/api/models");
+      const data = await r.json();
+      sel.innerHTML = '<option value="">— select model —</option>';
+      for (const m of data.models || []) {
+        const o = document.createElement("option");
+        o.value = m;
+        o.textContent = m;
+        sel.appendChild(o);
+      }
+    }
+
+    function renderMeta(summary) {
+      const el = $("meta");
+      el.classList.remove("hidden");
+      el.innerHTML =
+        "<p class='muted' style='margin:0 0 0.5rem;'>Spec paths resolve from repo root.</p>" +
+        "<p><strong>checkpoint_dir</strong><br><code>" + summary.checkpoint_dir + "</code></p>" +
+        "<p><strong>encoder_checkpoint</strong><br><code>" + summary.encoder_checkpoint + "</code></p>" +
+        "<p><strong>train / val HDF5</strong><br><code>" + summary.train_dataset_h5 + "</code><br><code>" +
+        summary.val_dataset_h5 + "</code></p>" +
+        "<p><strong>architecture</strong><br><code>" + JSON.stringify(summary.architecture) + "</code></p>" +
+        "<p class='muted'>Training stages in YAML: " + summary.n_stages + "</p>";
+    }
+
+    function renderChart(stages) {
+      const pts = [];
+      for (const s of stages) {
+        if (s.stage < 1 || !s.metrics || typeof s.metrics.best_val_loss !== "number") continue;
+        pts.push({ x: s.stage, y: s.metrics.best_val_loss });
+      }
+      const ctx = $("lossChart").getContext("2d");
+      if (chart) chart.destroy();
+      if (pts.length === 0) {
+        chart = null;
+        return;
+      }
+      chart = new Chart(ctx, {
+        type: "line",
+        data: {
+          datasets: [{
+            label: "best_val_loss",
+            data: pts.map((p) => ({ x: p.x, y: p.y })),
+            borderColor: "#5b9fd4",
+            backgroundColor: "rgba(91,159,212,0.15)",
+            tension: 0.2,
+            fill: true,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { type: "linear", title: { display: true, text: "stage" } },
+            y: { title: { display: true, text: "loss" } },
+          },
+          plugins: { legend: { display: true } },
+        },
+      });
+    }
+
+    function renderTable(stages) {
+      const cols = [
+        { key: "stage", label: "Stage" },
+        { key: "exists", label: "Checkpoint" },
+        { key: "blocked_by", label: "Blocked by" },
+        { key: "best_val_loss", label: "best_val_loss", m: "best_val_loss" },
+        { key: "best_epoch", label: "best_epoch", m: "best_epoch" },
+        { key: "epochs_ran", label: "epochs_ran", m: "epochs_ran" },
+        { key: "train_top1", label: "train top1%", m: "train_epoch_mean_from_sq_top1" },
+        { key: "val_loss", label: "val loss", m: "val_val_loss" },
+        { key: "val_top1", label: "val top1%", m: "val_val_from_sq_top1" },
+        { key: "smooth", label: "label smooth", m: "sq_ce_label_smoothing" },
+        { key: "updated", label: "updated_at", m: "updated_at" },
+      ];
+      let html = "<table><thead><tr>";
+      for (const c of cols) html += "<th>" + c.label + "</th>";
+      html += "</tr></thead><tbody>";
+      for (const s of stages) {
+        const m = s.metrics || {};
+        html += "<tr>";
+        html += "<td>" + s.stage + "</td>";
+        html += "<td>" + (s.exists ? "yes" : "no") + "</td>";
+        html += "<td>" + (s.blocked_by != null ? s.blocked_by : "—") + "</td>";
+        html += "<td class='num'>" + (m.best_val_loss !== undefined ? fmt(m.best_val_loss) : "—") + "</td>";
+        html += "<td class='num'>" + (m.best_epoch !== undefined ? m.best_epoch : "—") + "</td>";
+        html += "<td class='num'>" + (m.epochs_ran !== undefined ? m.epochs_ran : "—") + "</td>";
+        html += "<td class='num'>" + fmtPct(m.train_epoch_mean_from_sq_top1) + "</td>";
+        html += "<td class='num'>" + (m.val_val_loss !== undefined ? fmt(m.val_val_loss) : "—") + "</td>";
+        html += "<td class='num'>" + fmtPct(m.val_val_from_sq_top1) + "</td>";
+        html += "<td class='num'>" + (m.sq_ce_label_smoothing !== undefined ? fmt(m.sq_ce_label_smoothing) : "—") + "</td>";
+        html += "<td class='muted'>" + (m.updated_at || "—") + "</td>";
+        html += "</tr>";
+      }
+      html += "</tbody></table>";
+      $("table-wrap").innerHTML = html;
+    }
+
+    async function onModelChange() {
+      const name = $("model").value;
+      const st = $("status");
+      $("meta").classList.add("hidden");
+      $("table-wrap").innerHTML = "";
+      if (chart) { chart.destroy(); chart = null; }
+      if (!name) { st.textContent = ""; return; }
+      st.textContent = "loading…";
+      try {
+        const r = await fetch("/api/models/" + encodeURIComponent(name) + "/summary");
+        if (!r.ok) {
+          const t = await r.text();
+          st.innerHTML = "<span class='err'>" + r.status + " " + t + "</span>";
+          return;
+        }
+        const summary = await r.json();
+        st.textContent = "";
+        renderMeta(summary);
+        renderTable(summary.stages);
+        renderChart(summary.stages);
+      } catch (e) {
+        st.innerHTML = "<span class='err'>" + String(e) + "</span>";
+      }
+    }
+
+    loadModels().then(() => {
+      $("model").addEventListener("change", onModelChange);
+    });
+  </script>
+</body>
+</html>

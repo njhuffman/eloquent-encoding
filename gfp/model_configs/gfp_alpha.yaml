@@ -1,0 +1,53 @@
+# Example gfp spec — copy and set paths to your gfp HDF5 and jepa3 encoder checkpoint.
+#
+#   python -m gfp.train --model gfp_example --stage 0
+#   python -m gfp.train --model gfp_example --stage 1
+
+name: gfp_alpha
+checkpoint_dir: gfp_checkpoints/gfp_example
+
+# jepa3 checkpoint containing encoder_online.* (e.g. j3_delta stage)
+encoder_checkpoint: jepa3_checkpoints/j3_gamma/j3_delta_stage_2.pt
+
+train_dataset_h5: /mnt/eloquence_bulk/databases/gfp_training_1M.h5
+val_dataset_h5: /mnt/eloquence_bulk/databases/gfp_validation_1M.h5
+
+val_sample:
+  n: 10000
+  seed: 42
+
+defaults:
+  batch_size: 1024
+  dataloader_num_workers: 4
+  train_shuffle_seed: 7
+  use_amp: true
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 1
+  encoder_strict: true
+  seed: 0
+  early_stop_train_top1: null
+
+architecture:
+  id: gfp_from_mlp
+  config:
+    head_hidden: 512
+    head_depth: 4
+
+stages:
+  - sample:
+      n: 500000
+      seed: 1
+    train:
+      epochs: 1
+      learning_rate: 0.0003
+      gradient_accumulation_steps: 1
+    sq_ce_label_smoothing: 0.1
+  - sample:
+      n: 1000000
+      seed: 2
+    train:
+      epochs: 1
+      learning_rate: 0.0001
+      batch_size: 512
+    sq_ce_label_smoothing: 0.1
