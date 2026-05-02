@@ -14,16 +14,6 @@ PACKED_LAYOUT_VERSION = 1
 # Nibble encoding: 0 empty; 1–6 white P..K; 7–12 black P..K (matches plane index +1 split)
 
 
-def _square_nibble_from_tensor(t: np.ndarray, sq: int) -> int:
-    rank = sq // 8
-    file = sq % 8
-    sl = t[rank, file, :12]
-    idx = int(np.argmax(sl))
-    if sl[idx] < 0.5:
-        return 0
-    return int(idx + 1)  # 1..12
-
-
 def board_tensor_to_packed(board: np.ndarray) -> np.ndarray:
     """
     ``board`` float32 (8, 8, 18) as from board_to_tensor.
@@ -33,11 +23,18 @@ def board_tensor_to_packed(board: np.ndarray) -> np.ndarray:
     if b.shape != (BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS):
         raise ValueError(f"expected ({BOARD_HEIGHT},{BOARD_WIDTH},{BOARD_CHANNELS}), got {b.shape}")
 
+    p12 = b[:, :, :12]
+    amax = np.argmax(p12, axis=2)
+    mx = np.max(p12, axis=2)
+    empty = mx < 0.5
+    nibbles2d = np.where(empty, 0, amax + 1).astype(np.uint8, copy=False)
+    if np.any(nibbles2d > 15):
+        raise ValueError("invalid nibble in board tensor > 15")
+    flat = nibbles2d.ravel(order="C")
+
     out = np.zeros(PACKED_BOARD_LEN, dtype=np.uint8)
     for sq in range(64):
-        nib = _square_nibble_from_tensor(b, sq)
-        if nib < 0 or nib > 15:
-            raise ValueError(f"invalid nibble {nib} at square {sq}")
+        nib = int(flat[sq])
         bi = sq // 2
         if sq % 2 == 0:
             out[bi] = np.uint8(nib & 0x0F)

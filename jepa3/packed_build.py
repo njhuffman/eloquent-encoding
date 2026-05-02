@@ -5,6 +5,11 @@ Build jepa3 packed move HDF5 from a YAML recipe (same recipes as dataset_generat
   python -m jepa3.packed_build build --recipe dataset_generation/training_1M.yaml \\
       --data-dir DATA --output-dir databases/moves
 
+Profiling example (py-spy, scalene, etc.):
+
+  python -m jepa3.packed_build build --recipe jepa3/j3_bench.yaml \\
+      --data-dir /mnt/eloquence_bulk/databases/ --output-dir /mnt/eloquence_bulk/databases/
+
 Writes ``{output_dir}/{recipe.name}.h5`` with attrs ``jepa3_packed_format=1``.
 """
 

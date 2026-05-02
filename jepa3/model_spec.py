@@ -171,7 +171,7 @@ def load_model_spec(path: Path) -> dict[str, Any]:
 
     dm = _deep_merge(
         {
-            "move_benchmark_sample_n": 2048,
+            "move_benchmark_sample_n": 10000,
             "move_benchmark_seed": 42,
             "move_benchmark_train_seed": 1000045,
             "move_benchmark_succ_chunk": 256,

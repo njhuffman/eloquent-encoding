@@ -23,16 +23,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from embedding.board_encoding import board_to_tensor
-from jepa.move_row_codec import tensor_after_move
-from jepa3.board_masks import legal_from_square_mask, legal_to_square_mask
-from jepa3.packed_board_codec import board_tensor_to_packed, legal_masks_to_u64
-from jepa3.packed_h5 import PackedMoveH5Writer
-from move_predictor.encoding import move_to_from_to, promotion_code
-
+from dataset_generation.candidate_collect import board_at_ply, collect_candidate_positions
+from dataset_generation.pgn_prefilter import any_unfilled_stratum_may_match, game_matches_stratum
 from dataset_generation.recipe import Recipe, SourcePlan, StratumSpec
 from dataset_generation.resolve import resolve_source_file
-from dataset_generation.stream import iter_pgn_games_from_zstd_binary
+from dataset_generation.stream import iter_filtered_pgn_game_texts_from_zstd
+
+from embedding.board_encoding import board_to_tensor
+from jepa.move_row_codec import tensor_after_move
+from jepa3.board_masks import legal_from_and_to_u64
+from jepa3.packed_board_codec import board_tensor_to_packed
+from jepa3.packed_h5 import PackedMoveH5Writer
+from move_predictor.encoding import move_to_from_to, promotion_code
 
 logger = logging.getLogger(__name__)
 
@@ -53,51 +55,6 @@ def _game_matches_time_control(game: chess.pgn.Game, required: str | None) -> bo
         return True
     tc = game.headers.get("TimeControl")
     return tc == required
-
-
-def _game_matches_stratum(
-    white: int | None,
-    black: int | None,
-    bucket_by: str,
-    lo: int,
-    hi: int,
-) -> bool:
-    if white is None or black is None:
-        return False
-    if bucket_by == "white":
-        return lo <= white <= hi
-    if bucket_by == "black":
-        return lo <= black <= hi
-    if bucket_by == "both":
-        return lo <= white <= hi and lo <= black <= hi
-    raise ValueError(bucket_by)
-
-
-def collect_candidate_positions(
-    game: chess.pgn.Game,
-    *,
-    skip_opening_plies: int,
-    exclude_single_legal_move: bool,
-) -> list[tuple[str, int, int, chess.Move]]:
-    white_elo_h = _parse_elo(game.headers, "white")
-    black_elo_h = _parse_elo(game.headers, "black")
-    if white_elo_h is None or black_elo_h is None:
-        return []
-
-    board = game.board()
-    ply = 0
-    out: list[tuple[str, int, int, chess.Move]] = []
-    for move in game.mainline_moves():
-        if ply >= skip_opening_plies:
-            n_legal = board.legal_moves.count()
-            if (not exclude_single_legal_move) or n_legal >= 2:
-                fe = board.fen()
-                stm = 0 if board.turn == chess.WHITE else 1
-                elo_tm = white_elo_h if board.turn == chess.WHITE else black_elo_h
-                out.append((fe, stm, elo_tm, move))
-        board.push(move)
-        ply += 1
-    return out
 
 
 def _rng_for_game(
@@ -124,7 +81,8 @@ def _sample_indices(
 
 def _write_samples_packed(
     writer: PackedMoveH5Writer,
-    candidates: list[tuple[str, int, int, chess.Move]],
+    mainline: list[chess.Move],
+    candidates: list[tuple[int, int, int, chess.Move]],
     *,
     master_seed: int,
     source_plan_index: int,
@@ -140,17 +98,16 @@ def _write_samples_packed(
         )
     rng = _rng_for_game(master_seed, source_plan_index, stratum, stratum_index, g)
     for j in _sample_indices(rng, k, stratum.samples_per_game):
-        fen, _stm, elo, move = candidates[j]
-        board = chess.Board(fen)
+        ply, _stm, elo, move = candidates[j]
+        board = board_at_ply(mainline, ply)
         fr, to = move_to_from_to(move)
         pr = promotion_code(move)
-        if move not in board.legal_moves:
-            raise RuntimeError(f"internal error: illegal move in sample: {fen!r} {move}")
+        if __debug__:
+            if move not in board.legal_moves:
+                raise RuntimeError(f"internal error: illegal move in sample at ply {ply}: {move}")
         t_pre = board_to_tensor(board)
         t_post = tensor_after_move(board, move)
-        fm = legal_from_square_mask(board)
-        tm = legal_to_square_mask(board, fr)
-        fu, tu = legal_masks_to_u64(fm, tm)
+        fu, tu = legal_from_and_to_u64(board, fr)
         writer.append_row(
             packed_pre=board_tensor_to_packed(t_pre),
             packed_post=board_tensor_to_packed(t_post),
@@ -197,7 +154,9 @@ def _process_one_source_plan(
     except OSError as e:
         raise RuntimeError(f"failed to open source {plan.source!r}: {e}") from e
     try:
-        game_iter = iter_pgn_games_from_zstd_binary(raw)
+        game_iter = iter_filtered_pgn_game_texts_from_zstd(
+            raw, recipe=recipe, plan=plan, accepted=accepted
+        )
         pbar = tqdm(game_iter, desc=path.name, unit=" games")
         for text in pbar:
             if all(accepted[s] >= strata[s].take_games for s in range(len(strata))):
@@ -212,7 +171,12 @@ def _process_one_source_plan(
             white = _parse_elo(game.headers, "white")
             black = _parse_elo(game.headers, "black")
 
-            candidates = collect_candidate_positions(
+            if not any_unfilled_stratum_may_match(
+                white, black, recipe=recipe, plan=plan, accepted=accepted
+            ):
+                continue
+
+            mainline, candidates = collect_candidate_positions(
                 game,
                 skip_opening_plies=recipe.skip_opening_plies,
                 exclude_single_legal_move=recipe.exclude_single_legal_move,
@@ -221,7 +185,9 @@ def _process_one_source_plan(
             for s, st in enumerate(strata):
                 if accepted[s] >= st.take_games:
                     continue
-                if not _game_matches_stratum(white, black, recipe.bucket_by, st.elo_min, st.elo_max):
+                if not game_matches_stratum(
+                    white, black, recipe.bucket_by, st.elo_min, st.elo_max
+                ):
                     continue
                 if len(candidates) < st.samples_per_game:
                     continue
@@ -229,6 +195,7 @@ def _process_one_source_plan(
                 accepted[s] += 1
                 _write_samples_packed(
                     writer,
+                    mainline,
                     candidates,
                     master_seed=recipe.master_seed,
                     source_plan_index=plan_index,

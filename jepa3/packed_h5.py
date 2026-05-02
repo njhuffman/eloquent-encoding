@@ -53,7 +53,7 @@ def assert_packed_h5(path: Path | str) -> None:
 class PackedMoveH5Writer:
     """Append-only writer; mirrors dataset_generation SampleBatchWriter flush pattern."""
 
-    def __init__(self, path: Path, *, batch_size: int = 1024, chunk_rows: int | None = None) -> None:
+    def __init__(self, path: Path, *, batch_size: int = 4096, chunk_rows: int | None = None) -> None:
         self.path = path.expanduser().resolve()
         self.batch_size = int(batch_size)
         self.chunk_rows = int(chunk_rows) if chunk_rows is not None else DEFAULT_CHUNK

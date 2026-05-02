@@ -521,7 +521,7 @@
         const names = selected.join(", ");
         $("bench-hint").textContent =
           "No saved stage benchmark JSON for the selected model(s) (expected metrics/<name>_stage_benchmarks.json). " +
-          "There is no jepa3 refresh script yet; this tab is for future parity. (" +
+          "Run <kbd>python -m jepa3.scripts.refresh_dashboard_metrics --model NAME</kbd> (joint from+to top1 on packed HDF5). (" +
           names +
           ")";
         destroyBenchCharts();
