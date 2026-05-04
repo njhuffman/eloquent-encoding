@@ -1,6 +1,6 @@
-name: tiny_test_v4
-checkpoint_dir: jepa3_checkpoints/tiny_test_v4
-# HDF5: jepa3 packed format only (`python -m jepa3.packed_build build --recipe ... --data-dir ... --output-dir ...`).
+name: tiny_test
+checkpoint_dir: world_model_checkpoints/tiny_test
+# HDF5: jepa3 packed format (`python -m jepa3.packed_build ...`); reused by world_model loaders.
 train_move_dataset_h5: databases/moves/training_moves_1M.h5
 val_move_dataset_h5: databases/moves/validation_moves_1M.h5
 
@@ -24,11 +24,9 @@ defaults:
   val_legal_seed: 42
   train_shuffle_seed: 7
   gsnr_probe_every_opt_steps: 0
-  aux_board_recon_weight: 0.1
-  aux_meta_weight: 0.05
 
 architecture:
-  id: chess_jepa_v4
+  id: chess_world_model_v1
   config:
     d_model: 128
     encoder_layers: 2
@@ -36,12 +34,17 @@ architecture:
     dim_feedforward: 512
     dropout: 0.0
     jepa_square_embed_dim: 48
-    predictor_hidden: 256
-    predictor_depth: 2
+    predictor_encoder_layers: 2
+    predictor_nhead: 4
+    predictor_dim_feedforward: 512
+    predictor_dropout: 0.0
     from_to_head_hidden: 128
     from_to_head_depth: 2
-    aux_board_recon_hidden: 128
-    aux_meta_hidden: 64
+    from_pointer_dim: 128
+    from_pointer_elo_dim: 16
+    recon_piece_head_hidden: 128
+    recon_turn_head_hidden: 128
+    recon_can_move_head_hidden: 128
 
 stages:
   - sample:
@@ -52,9 +55,11 @@ stages:
       learning_rate: 0.0001
       weight_decay: 0.01
     ema_momentum: 0.99
-    jepa_weight: 1.0
+    jepa_patch_weight: 0.5
     from_sq_ce_weight: 0.5
-    to_sq_ce_weight: 0.5
+    recon_piece_ce_weight: 0.1
+    recon_turn_ce_weight: 0.05
+    recon_can_move_ce_weight: 0.05
     sq_ce_label_smoothing: 0.0
     vicreg:
       inv_coef: 0.05

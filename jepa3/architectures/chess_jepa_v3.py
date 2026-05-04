@@ -1,7 +1,6 @@
 """
-Chess-JEPA v3: encoder exposes CLS/GAP (B, d_model). JEPA MLP uses that plus
-learned from/to slot embeddings (two tables of 64). From/to CE heads use the full
-global vector. The JEPA predictor outputs the full d_model invariance target.
+Chess-JEPA v3: encoder uses CLS + 64 square tokens (piece-category + square embeddings).
+JEPA MLP uses CLS plus learned from/to slot embeddings. From/to CE heads use CLS.
 """
 
 from __future__ import annotations
@@ -12,7 +11,9 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from jepa2.config import BOARD_CHANNELS, BOARD_HEIGHT, BOARD_WIDTH
+from jepa2.config import BOARD_HEIGHT, BOARD_WIDTH
+
+from jepa3.board_square_categories import NUM_SQUARE_CATEGORIES, square_categories_from_board_tensor
 
 ARCHITECTURE_ID = "chess_jepa_v3"
 
@@ -22,7 +23,6 @@ DEFAULT_ARCHITECTURE_CONFIG: dict[str, Any] = {
     "nhead": 8,
     "dim_feedforward": 1024,
     "dropout": 0.1,
-    "use_cls": True,
     "jepa_square_embed_dim": 64,
     "predictor_hidden": 512,
     "predictor_depth": 2,
@@ -38,7 +38,6 @@ def resolve_architecture_config(user: dict[str, Any] | None) -> dict[str, Any]:
     cfg["nhead"] = int(cfg["nhead"])
     cfg["dim_feedforward"] = int(cfg["dim_feedforward"])
     cfg["dropout"] = float(cfg["dropout"])
-    cfg["use_cls"] = bool(cfg["use_cls"])
     cfg["jepa_square_embed_dim"] = int(cfg["jepa_square_embed_dim"])
     cfg["predictor_hidden"] = int(cfg["predictor_hidden"])
     cfg["predictor_depth"] = int(cfg["predictor_depth"])
@@ -76,7 +75,7 @@ def _mlp_gelu(
 
 
 class BoardEncoderV3(nn.Module):
-    """64 square tokens (+ optional CLS). ``forward`` returns global only."""
+    """CLS + 64 square tokens: piece-category embedding + square index embedding; CLS from side to move."""
 
     def __init__(
         self,
@@ -86,18 +85,13 @@ class BoardEncoderV3(nn.Module):
         nhead: int,
         dim_feedforward: int,
         dropout: float,
-        use_cls: bool,
     ) -> None:
         super().__init__()
         self.d_model = d_model
-        self.use_cls = use_cls
         n_squares = BOARD_HEIGHT * BOARD_WIDTH
-        self.square_embed = nn.Linear(BOARD_CHANNELS, d_model)
-        self.pos_embed = nn.Parameter(torch.zeros(1, n_squares, d_model))
-        if use_cls:
-            self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
-        else:
-            self.cls_token = None
+        self.piece_emb = nn.Embedding(NUM_SQUARE_CATEGORIES, d_model)
+        self.square_emb = nn.Embedding(n_squares, d_model)
+        self.turn_cls_emb = nn.Embedding(2, d_model)
         enc_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -108,25 +102,22 @@ class BoardEncoderV3(nn.Module):
             norm_first=True,
         )
         self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
-        if use_cls:
-            nn.init.trunc_normal_(self.cls_token, std=0.02)
+        nn.init.trunc_normal_(self.piece_emb.weight, std=0.02)
+        nn.init.trunc_normal_(self.square_emb.weight, std=0.02)
+        nn.init.trunc_normal_(self.turn_cls_emb.weight, std=0.02)
 
     def forward_with_tokens(self, board: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         b = board.shape[0]
-        x = board.reshape(b, BOARD_HEIGHT * BOARD_WIDTH, BOARD_CHANNELS).float()
-        x = self.square_embed(x) + self.pos_embed
-        if self.use_cls:
-            assert self.cls_token is not None
-            cls = self.cls_token.expand(b, -1, -1)
-            x = torch.cat([cls, x], dim=1)
+        cats = square_categories_from_board_tensor(board)
+        sq_idx = torch.arange(BOARD_HEIGHT * BOARD_WIDTH, device=board.device, dtype=torch.long).view(1, -1).expand(b, -1)
+        tok = self.piece_emb(cats) + self.square_emb(sq_idx)
+        # turn_cls_emb: index 0 = black to move, 1 = white to move (plane 12).
+        turn_idx = (board[:, 0, 0, 12] > 0.5).long().clamp(0, 1)
+        cls = self.turn_cls_emb(turn_idx).unsqueeze(1)
+        x = torch.cat([cls, tok], dim=1)
         x = self.encoder(x)
-        if self.use_cls:
-            z_global = x[:, 0, :]
-            tokens = x[:, 1:, :]
-        else:
-            tokens = x
-            z_global = tokens.mean(dim=1)
+        z_global = x[:, 0, :]
+        tokens = x[:, 1:, :]
         return z_global, tokens
 
     def forward(self, board: torch.Tensor) -> torch.Tensor:
@@ -207,7 +198,6 @@ class ChessJEPAV3(nn.Module):
             nhead=cfg["nhead"],
             dim_feedforward=cfg["dim_feedforward"],
             dropout=cfg["dropout"],
-            use_cls=cfg["use_cls"],
         )
         self.encoder_online = BoardEncoderV3(**enc_kw)
         self.encoder_target = copy.deepcopy(self.encoder_online)
@@ -261,7 +251,7 @@ class ChessJEPAV3(nn.Module):
             p_t.data.mul_(m).add_(p_o.data, alpha=1.0 - m)
 
     def encode_online(self, board: torch.Tensor) -> torch.Tensor:
-        """Public online encoding: CLS or GAP only, shape (B, d_model)."""
+        """Public online encoding: CLS only, shape (B, d_model)."""
         return self.encoder_online(board)
 
     def encode_online_with_jepa(

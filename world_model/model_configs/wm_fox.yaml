@@ -1,0 +1,87 @@
+name: wm_fox
+checkpoint_dir: world_model_checkpoints/
+# HDF5: jepa3 packed format (`python -m jepa3.packed_build ...`); reused by world_model loaders.
+train_move_dataset_h5: /mnt/eloquence_bulk/databases/j3_training_16M.h5
+val_move_dataset_h5: /mnt/eloquence_bulk/databases/j3_training_1M.h5
+
+val_sample:
+  n: 1000
+  seed: 42
+
+dashboard_metrics:
+  move_benchmark_sample_n: 512
+  move_benchmark_seed: 42
+  move_benchmark_train_seed: 1000045
+  move_benchmark_succ_chunk: 128
+  device: cpu
+
+defaults:
+  batch_size: 64
+  weight_decay: 0.05
+  dataloader_num_workers: 0
+  log_interval: 5
+  use_amp: true
+  val_legal_seed: 42
+  train_shuffle_seed: 7
+  gsnr_probe_every_opt_steps: 0
+
+architecture:
+  id: chess_world_model_v1
+  config:
+    d_model: 64
+    encoder_layers: 4
+    nhead: 8
+    dim_feedforward: 512
+    dropout: 0.0
+    jepa_square_embed_dim: 64
+    predictor_encoder_layers: 1
+    predictor_nhead: 8
+    predictor_dim_feedforward: 64
+    predictor_dropout: 0.0
+    from_to_head_hidden: 512
+    from_to_head_depth: 2
+    from_pointer_dim: 256
+    from_pointer_elo_dim: 16
+    recon_piece_head_hidden: 128
+    recon_turn_head_hidden: 128
+    recon_can_move_head_hidden: 128
+
+stages:
+  - sample:
+      n: 200000
+      seed: 1
+    train:
+      epochs: 1
+      learning_rate: 0.0001
+      weight_decay: 0.01
+    ema_momentum: 0.99
+    jepa_patch_weight: 0.01
+    from_sq_ce_weight: 0.01
+    recon_piece_ce_weight: 1.0
+    recon_turn_ce_weight: 1.0
+    recon_can_move_ce_weight: 0.1
+    sq_ce_label_smoothing: 0.0
+    vicreg:
+      inv_coef: 1.0
+      var_coef: 1.0
+      cov_coef: 0.0
+      std_target: 1.0
+  - sample:
+      n: 1000000
+      seed: 1
+    train:
+      epochs: 1
+      learning_rate: 0.0002
+      weight_decay: 0.01
+    ema_momentum: 0.999
+    jepa_patch_weight: 0.1
+    from_sq_ce_weight: 10.0
+    recon_piece_ce_weight: 1.0
+    recon_turn_ce_weight: 1.0
+    recon_can_move_ce_weight: 0.0
+    sq_ce_label_smoothing: 0.0
+    vicreg:
+      inv_coef: 1.0
+      var_coef: 1.0
+      cov_coef: 0.1
+      std_target: 1.0

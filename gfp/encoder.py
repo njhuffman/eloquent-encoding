@@ -24,7 +24,6 @@ def _encoder_kwargs_from_architecture(
         nhead=int(cfg["nhead"]),
         dim_feedforward=int(cfg["dim_feedforward"]),
         dropout=float(cfg["dropout"]),
-        use_cls=bool(cfg["use_cls"]),
     )
 
 

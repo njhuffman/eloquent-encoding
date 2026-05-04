@@ -29,7 +29,6 @@ DEFAULT_ARCHITECTURE_CONFIG: dict[str, Any] = {
     "nhead": 8,
     "dim_feedforward": 1024,
     "dropout": 0.1,
-    "use_cls": True,
     "jepa_square_embed_dim": 64,
     "predictor_hidden": 512,
     "predictor_depth": 2,
@@ -47,7 +46,6 @@ def resolve_architecture_config(user: dict[str, Any] | None) -> dict[str, Any]:
     cfg["nhead"] = int(cfg["nhead"])
     cfg["dim_feedforward"] = int(cfg["dim_feedforward"])
     cfg["dropout"] = float(cfg["dropout"])
-    cfg["use_cls"] = bool(cfg["use_cls"])
     cfg["jepa_square_embed_dim"] = int(cfg["jepa_square_embed_dim"])
     cfg["predictor_hidden"] = int(cfg["predictor_hidden"])
     cfg["predictor_depth"] = int(cfg["predictor_depth"])
@@ -111,7 +109,6 @@ class ChessJEPAV4(nn.Module):
             nhead=cfg["nhead"],
             dim_feedforward=cfg["dim_feedforward"],
             dropout=cfg["dropout"],
-            use_cls=cfg["use_cls"],
         )
         self.encoder_online = BoardEncoderV3(**enc_kw)
         self.encoder_target = copy.deepcopy(self.encoder_online)

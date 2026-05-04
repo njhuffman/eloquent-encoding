@@ -36,7 +36,6 @@ architecture:
     nhead: 8
     dim_feedforward: 1024
     dropout: 0.0
-    use_cls: false
     jepa_square_embed_dim: 64
     predictor_hidden: 256
     predictor_depth: 3

@@ -22,6 +22,7 @@ checkpoints/
 jepa_checkpoints/
 jepa2_checkpoints/
 jepa3_checkpoints/
+world_model_checkpoints/
 move_predictor_checkpoints/
 
 # IDE / editor
