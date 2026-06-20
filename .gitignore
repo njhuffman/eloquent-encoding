@@ -24,6 +24,7 @@ jepa2_checkpoints/
 jepa3_checkpoints/
 world_model_checkpoints/
 move_predictor_checkpoints/
+style_policy_checkpoints/
 
 # IDE / editor
 .idea/

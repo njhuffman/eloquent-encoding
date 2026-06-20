@@ -8,9 +8,6 @@ from style_policy.model import BasePolicy
 from style_policy.dataset import PackedMoveDataset
 from style_policy.loss import masked_square_ce, top1_legal
 from style_policy.model_spec import elo_to_bucket
-from style_policy.legal_mask import u64_to_mask
-
-_NEG = float("-inf")
 
 
 def _step_loss(model, batch, device, n_elo, label_smoothing):
@@ -54,6 +51,11 @@ def train_one_stage(spec: dict, stage_idx: int, device: str) -> dict:
             if i % stage["log_interval"] == 0:
                 print(f"epoch={epoch} step={i} loss={loss.item():.4f} "
                       f"from_top1={m['from_top1']*100:.1f}% to_top1={m['to_top1']*100:.1f}%")
+        # flush any partial accumulation group at end of epoch
+        if (i + 1) % accum != 0:
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), stage["max_gradient_norm"])
+            scaler.step(opt); scaler.update(); opt.zero_grad()
     out = ckpt_dir / f"{spec['name']}_stage_{stage_idx}.pt"
     torch.save({"model": model.state_dict(), "architecture": arch}, out)
     rec = {"stage": stage_idx, "last_batch_metrics": m}
