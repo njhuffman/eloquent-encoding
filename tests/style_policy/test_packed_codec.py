@@ -73,7 +73,7 @@ def test_packed_roundtrip_startpos():
 
 def test_packed_roundtrip_midgame():
     """Round-trip a mid-game position with EP square and partial castling rights."""
-    # 1.e4 e5 — after 1.e4 Black to move, EP square at e3
+    # 1.e4 e5 — after 1.e4 White to move, EP square at e6
     fen = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2"
     original = _board_tensor_from_fen(fen)
     packed = board_tensor_to_packed(original)

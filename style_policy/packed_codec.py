@@ -156,45 +156,6 @@ def packed_to_board_tensor(packed) -> torch.Tensor:
     return torch.from_numpy(out)
 
 
-def _packed_to_board_tensor_single(p: np.ndarray) -> np.ndarray:
-    """uint8 (PACKED_BOARD_LEN,) -> float32 (8, 8, 18). Internal helper."""
-    p = np.asarray(p, dtype=np.uint8).reshape(-1)
-    if p.shape[0] != PACKED_BOARD_LEN:
-        raise ValueError(f"expected packed length {PACKED_BOARD_LEN}, got {p.shape[0]}")
-
-    out = np.zeros((BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS), dtype=np.float32)
-    for sq in range(64):
-        bi = sq // 2
-        nib = int(p[bi] & 0x0F) if sq % 2 == 0 else int(p[bi] >> 4) & 0x0F
-        if nib < 0 or nib > 12:
-            raise ValueError(f"invalid packed nibble {nib} at sq {sq}")
-        if nib == 0:
-            continue
-        rank = sq // 8
-        file = sq % 8
-        out[rank, file, nib - 1] = 1.0
-
-    meta = int(p[32])
-    if meta & 1:
-        out[:, :, 12] = 1.0
-    else:
-        out[:, :, 12] = 0.0
-    if meta & 2:
-        out[:, :, 13] = 1.0
-    if meta & 4:
-        out[:, :, 14] = 1.0
-    if meta & 8:
-        out[:, :, 15] = 1.0
-    if meta & 16:
-        out[:, :, 16] = 1.0
-
-    ep_sq = int(p[33])
-    if ep_sq < 64:
-        r, f = ep_sq // 8, ep_sq % 8
-        out[r, f, 17] = 1.0
-    return out
-
-
 def legal_mask_float_to_u64(mask: np.ndarray) -> np.uint64:
     """(64,) float32 with values 0/1 -> bitboard."""
     m = np.asarray(mask, dtype=np.float32).reshape(64)
