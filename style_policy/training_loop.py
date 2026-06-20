@@ -1,5 +1,5 @@
-"""Step-driven training: from_ce + to_ce with AMP, grad-accum, periodic validation,
-resumable checkpoints, and optional W&B logging.
+"""Step-driven training: from_ce + to_ce with AMP (bf16 by default), grad-accum, periodic
+validation, resumable checkpoints, and optional W&B logging.
 
 The loop is driven by a global micro-batch step counter (not a plain epoch loop) so a
 run can resume after interruption: a `.resume.pt` checkpoint carries model + optimizer
@@ -7,6 +7,11 @@ run can resume after interruption: a `.resume.pt` checkpoint carries model + opt
 total step budget is reached. Data ordering is NOT byte-exact across a resume (the
 dataloader re-shuffles) — only the total amount of training and the optimizer state are
 preserved, which is what matters for SGD.
+
+AMP dtype defaults to **bf16**: fp16 autocast overflows the forward pass (max 65504) once
+activations grow, producing a NaN loss that GradScaler cannot recover from (it just skips
+every step -> the model silently freezes). bf16 has fp32's exponent range, so it does not
+overflow and needs no GradScaler. A fail-fast guard also aborts on any non-finite loss.
 """
 from __future__ import annotations
 import json
@@ -18,6 +23,14 @@ from style_policy.model import BasePolicy
 from style_policy.dataset import PackedMoveDataset
 from style_policy.loss import masked_square_ce, top1_legal
 from style_policy.model_spec import elo_to_bucket
+
+_AMP_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16}
+
+
+def _resolve_amp_dtype(name: str) -> torch.dtype:
+    if name not in _AMP_DTYPES:
+        raise ValueError(f"amp_dtype must be one of {sorted(_AMP_DTYPES)} (got {name!r})")
+    return _AMP_DTYPES[name]
 
 
 def _init_wandb(spec: dict, stage_idx: int, stage: dict, device: str):
@@ -64,14 +77,14 @@ def _make_loader(h5: str, stage: dict, sample_n: int, seed: int, *, shuffle: boo
 
 
 @torch.no_grad()
-def _validate(model, val_dl, device, n_elo, use_amp) -> dict:
+def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype) -> dict:
     """Mean unsmoothed val metrics over a fixed subset. Restores train mode on exit."""
     was_training = model.training
     model.eval()
     tot = {"from_ce": 0.0, "to_ce": 0.0, "from_top1": 0.0, "to_top1": 0.0}
     nb = 0
     for batch in val_dl:
-        with torch.amp.autocast("cuda", enabled=use_amp and device == "cuda"):
+        with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
             _, m = _step_loss(model, batch, device, n_elo, 0.0)
         for k in tot:
             tot[k] += m[k]
@@ -88,13 +101,15 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
     name = spec["name"]
     ckpt_dir = Path(spec["checkpoint_dir"]); (ckpt_dir / "metrics").mkdir(parents=True, exist_ok=True)
     use_amp = bool(stage["use_amp"])
+    amp_dtype = _resolve_amp_dtype(str(stage.get("amp_dtype", "bf16")))
 
     model = BasePolicy.from_config(arch).to(device)
     if stage_idx > 1:
         prev = ckpt_dir / f"{name}_stage_{stage_idx-1}.pt"
         model.load_state_dict(torch.load(prev, map_location=device)["model"])
     opt = torch.optim.AdamW(model.parameters(), lr=stage["train"]["learning_rate"], weight_decay=stage["weight_decay"])
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device == "cuda")
+    # GradScaler is only needed/valid for fp16; bf16 has fp32 range and must NOT be scaled.
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device == "cuda" and amp_dtype == torch.float16)
     accum = int(stage.get("gradient_accumulation_steps", 1))
 
     train_ds, train_dl = _make_loader(spec["train_h5"], stage, stage["sample"]["n"], stage["sample"]["seed"], shuffle=True)
@@ -120,6 +135,7 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
         torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "scaler": scaler.state_dict(),
                     "global_step": global_step, "best_val": best_val, "architecture": arch}, resume_path)
 
+    print(f"amp={'on' if use_amp else 'off'} dtype={amp_dtype} grad_scaler={'on' if scaler.is_enabled() else 'off'}")
     run = _init_wandb(spec, stage_idx, stage, device)
     model.train(); opt.zero_grad()
     pending = False          # grads accumulated since the last optimizer step
@@ -130,8 +146,17 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
         for batch in train_dl:
             if global_step >= total_steps:
                 break
-            with torch.amp.autocast("cuda", enabled=use_amp and device == "cuda"):
+            with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
                 loss, m = _step_loss(model, batch, device, n_elo, stage.get("label_smoothing", 0.0))
+            # Fail fast: a non-finite loss means the run has diverged. Don't silently freeze
+            # for thousands of steps (the fp16-overflow failure mode). Save a diagnostic and abort.
+            if not torch.isfinite(loss):
+                _save_resume()
+                if run is not None:
+                    run.finish(exit_code=1)
+                raise RuntimeError(
+                    f"Non-finite loss ({loss.item()}) at step {global_step}; training diverged. "
+                    f"State saved to {resume_path}. (amp_dtype={amp_dtype}; if fp16, switch to bf16.)")
             scaler.scale(loss / accum).backward()
             pending = True
             if (global_step + 1) % accum == 0:
@@ -149,7 +174,7 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
                              "lr": opt.param_groups[0]["lr"]}, step=global_step)
 
             if val_dl is not None and val_interval > 0 and global_step > 0 and global_step % val_interval == 0:
-                vm = _validate(model, val_dl, device, n_elo, use_amp)
+                vm = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
                 vloss = vm["val/from_ce"] + vm["val/to_ce"]
                 print(f"  [val step={global_step}] from_ce={vm['val/from_ce']:.4f} to_ce={vm['val/to_ce']:.4f} "
                       f"from_top1={vm['val/from_top1']*100:.1f}% to_top1={vm['val/to_top1']*100:.1f}%")
@@ -173,7 +198,7 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
         scaler.step(opt); scaler.update(); opt.zero_grad()
 
     if val_dl is not None:
-        final_val = _validate(model, val_dl, device, n_elo, use_amp)
+        final_val = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
         vloss = final_val["val/from_ce"] + final_val["val/to_ce"]
         print(f"[final val] from_ce={final_val['val/from_ce']:.4f} to_ce={final_val['val/to_ce']:.4f} "
               f"from_top1={final_val['val/from_top1']*100:.1f}% to_top1={final_val['val/to_top1']*100:.1f}%")

@@ -21,6 +21,7 @@ defaults:
                               # already ~98% saturated at bs128, so throughput is ~unchanged (~2.8h/epoch).
   dataloader_num_workers: 4
   use_amp: true
+  amp_dtype: bf16        # bf16 avoids fp16 forward-overflow NaN (Ada GPU supports it; no GradScaler needed)
   weight_decay: 0.01
   max_gradient_norm: 1.0
   log_interval: 50
