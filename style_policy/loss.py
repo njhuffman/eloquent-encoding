@@ -46,3 +46,18 @@ def top1_legal(logits: torch.Tensor, target: torch.Tensor, legal_mask: torch.Ten
     masked = _masked_logits(logits, legal_mask)
     pred = masked.argmax(dim=-1)
     return (pred == target.long()).float().mean().item()
+
+
+def joint_top1(from_logits, from_target, from_mask, to_logits, to_target, to_mask) -> float:
+    """Full-move top-1: predicted from-square AND predicted to-square both correct.
+
+    This is the honest autoregressive full-move accuracy (comparable to Maia's ~53%):
+    a move is counted correct only when the from-head's top legal square is right AND the
+    to-head's top legal square is right. Because correctness requires the from-square to
+    match, the (teacher-forced) to-logits are conditioned on the true from-square exactly
+    when it equals the predicted one — so no second forward is needed.
+    """
+    fp = _masked_logits(from_logits, from_mask).argmax(dim=-1)
+    tp = _masked_logits(to_logits, to_mask).argmax(dim=-1)
+    correct = (fp == from_target.long()) & (tp == to_target.long())
+    return correct.float().mean().item()

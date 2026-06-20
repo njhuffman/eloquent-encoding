@@ -21,7 +21,7 @@ import torch
 from torch.utils.data import DataLoader
 from style_policy.model import BasePolicy
 from style_policy.dataset import PackedMoveDataset
-from style_policy.loss import masked_square_ce, top1_legal
+from style_policy.loss import masked_square_ce, top1_legal, joint_top1
 from style_policy.model_spec import elo_to_bucket
 
 _AMP_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16}
@@ -61,11 +61,14 @@ def _step_loss(model, batch, device, n_elo, label_smoothing):
         packed, batch["from_sq"].to(device),
         batch["from_legal_u64"].to(device), batch["to_legal_u64"].to(device),
         elo_idx=elo_idx)
-    fl = masked_square_ce(from_logits, batch["from_sq"].to(device), from_mask, label_smoothing=label_smoothing)
-    tl = masked_square_ce(to_logits, batch["to_sq"].to(device), to_mask, label_smoothing=label_smoothing)
+    from_sq = batch["from_sq"].to(device)
+    to_sq = batch["to_sq"].to(device)
+    fl = masked_square_ce(from_logits, from_sq, from_mask, label_smoothing=label_smoothing)
+    tl = masked_square_ce(to_logits, to_sq, to_mask, label_smoothing=label_smoothing)
     metrics = {"from_ce": fl.item(), "to_ce": tl.item(),
-               "from_top1": top1_legal(from_logits, batch["from_sq"].to(device), from_mask),
-               "to_top1": top1_legal(to_logits, batch["to_sq"].to(device), to_mask)}
+               "from_top1": top1_legal(from_logits, from_sq, from_mask),
+               "to_top1": top1_legal(to_logits, to_sq, to_mask),
+               "full_top1": joint_top1(from_logits, from_sq, from_mask, to_logits, to_sq, to_mask)}
     return fl + tl, metrics
 
 
@@ -81,7 +84,7 @@ def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype) -> dict:
     """Mean unsmoothed val metrics over a fixed subset. Restores train mode on exit."""
     was_training = model.training
     model.eval()
-    tot = {"from_ce": 0.0, "to_ce": 0.0, "from_top1": 0.0, "to_top1": 0.0}
+    tot = {"from_ce": 0.0, "to_ce": 0.0, "from_top1": 0.0, "to_top1": 0.0, "full_top1": 0.0}
     nb = 0
     for batch in val_dl:
         with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
@@ -122,6 +125,22 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
     steps_per_epoch = math.ceil(len(train_ds) / stage["batch_size"])
     total_steps = steps_per_epoch * int(stage["train"]["epochs"])
 
+    # Optional LR schedule (linear warmup -> cosine decay), measured in OPTIMIZER steps.
+    lr_schedule = str(stage.get("lr_schedule", "constant"))
+    warmup = int(stage.get("warmup_steps", 0))
+    lr_min_frac = float(stage.get("lr_min_frac", 0.0))
+    total_opt_steps = max(1, total_steps // max(1, accum))
+    sched = None
+    if lr_schedule == "cosine":
+        def _lr_lambda(opt_step):
+            if warmup > 0 and opt_step < warmup:
+                return (opt_step + 1) / warmup
+            prog = min(1.0, (opt_step - warmup) / max(1, total_opt_steps - warmup))
+            return lr_min_frac + (1.0 - lr_min_frac) * 0.5 * (1.0 + math.cos(math.pi * prog))
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda)
+    elif lr_schedule != "constant":
+        raise ValueError(f"lr_schedule must be 'constant' or 'cosine' (got {lr_schedule!r})")
+
     resume_path = ckpt_dir / f"{name}_stage_{stage_idx}.resume.pt"
     best_val = float("inf")
     global_step = 0
@@ -129,10 +148,13 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
         st = torch.load(resume_path, map_location=device)
         model.load_state_dict(st["model"]); opt.load_state_dict(st["optimizer"])
         scaler.load_state_dict(st["scaler"]); global_step = int(st["global_step"]); best_val = float(st["best_val"])
+        if sched is not None and st.get("scheduler") is not None:
+            sched.load_state_dict(st["scheduler"])
         print(f"Resumed from {resume_path} at step {global_step}/{total_steps} (best_val={best_val:.4f})")
 
     def _save_resume():
         torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "scaler": scaler.state_dict(),
+                    "scheduler": sched.state_dict() if sched is not None else None,
                     "global_step": global_step, "best_val": best_val, "architecture": arch}, resume_path)
 
     print(f"amp={'on' if use_amp else 'off'} dtype={amp_dtype} grad_scaler={'on' if scaler.is_enabled() else 'off'}")
@@ -163,21 +185,25 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
                 scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), stage["max_gradient_norm"])
                 scaler.step(opt); scaler.update(); opt.zero_grad()
+                if sched is not None:
+                    sched.step()
                 pending = False
 
             if global_step % stage["log_interval"] == 0:
                 print(f"step={global_step}/{total_steps} loss={loss.item():.4f} "
-                      f"from_top1={m['from_top1']*100:.1f}% to_top1={m['to_top1']*100:.1f}%")
+                      f"from_top1={m['from_top1']*100:.1f}% to_top1={m['to_top1']*100:.1f}% "
+                      f"full_top1={m['full_top1']*100:.1f}%")
                 if run is not None:
                     run.log({"train/loss": loss.item(), "train/from_ce": m["from_ce"], "train/to_ce": m["to_ce"],
                              "train/from_top1": m["from_top1"], "train/to_top1": m["to_top1"],
-                             "lr": opt.param_groups[0]["lr"]}, step=global_step)
+                             "train/full_top1": m["full_top1"], "lr": opt.param_groups[0]["lr"]}, step=global_step)
 
             if val_dl is not None and val_interval > 0 and global_step > 0 and global_step % val_interval == 0:
                 vm = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
                 vloss = vm["val/from_ce"] + vm["val/to_ce"]
                 print(f"  [val step={global_step}] from_ce={vm['val/from_ce']:.4f} to_ce={vm['val/to_ce']:.4f} "
-                      f"from_top1={vm['val/from_top1']*100:.1f}% to_top1={vm['val/to_top1']*100:.1f}%")
+                      f"from_top1={vm['val/from_top1']*100:.1f}% to_top1={vm['val/to_top1']*100:.1f}% "
+                      f"full_top1={vm['val/full_top1']*100:.1f}%")
                 if run is not None:
                     run.log({**vm, "val/loss": vloss}, step=global_step)
                 if vloss < best_val:
@@ -196,12 +222,15 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
         scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(model.parameters(), stage["max_gradient_norm"])
         scaler.step(opt); scaler.update(); opt.zero_grad()
+        if sched is not None:
+            sched.step()
 
     if val_dl is not None:
         final_val = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
         vloss = final_val["val/from_ce"] + final_val["val/to_ce"]
         print(f"[final val] from_ce={final_val['val/from_ce']:.4f} to_ce={final_val['val/to_ce']:.4f} "
-              f"from_top1={final_val['val/from_top1']*100:.1f}% to_top1={final_val['val/to_top1']*100:.1f}%")
+              f"from_top1={final_val['val/from_top1']*100:.1f}% to_top1={final_val['val/to_top1']*100:.1f}% "
+              f"full_top1={final_val['val/full_top1']*100:.1f}%")
         if run is not None:
             run.log({**final_val, "val/loss": vloss}, step=global_step)
         if vloss < best_val:

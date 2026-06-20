@@ -28,6 +28,9 @@ defaults:
   val_interval: 1000          # ~every few minutes; fewer total steps now at bs256
   checkpoint_interval: 1000   # resumable checkpoint cadence (resume with: --resume)
   gradient_accumulation_steps: 1   # effective batch 256 in one step (was 128x2)
+  lr_schedule: cosine     # linear warmup -> cosine decay to lr_min_frac*lr (better than flat LR)
+  warmup_steps: 1000
+  lr_min_frac: 0.0
   seed: 0
 stages:
   - sample: {n: 16000000, seed: 1}

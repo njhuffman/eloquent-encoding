@@ -22,6 +22,9 @@ defaults:
   log_interval: 20
   val_interval: 10          # steps between validation passes (0 = only at end)
   checkpoint_interval: 15   # steps between resumable checkpoint saves (0 = only at end)
+  lr_schedule: cosine
+  warmup_steps: 5
+  lr_min_frac: 0.0
   seed: 0
 stages:
   - sample: {n: 2000, seed: 1}
