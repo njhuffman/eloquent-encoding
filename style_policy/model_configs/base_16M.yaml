@@ -34,5 +34,5 @@ defaults:
   seed: 0
 stages:
   - sample: {n: 16000000, seed: 1}
-    train: {epochs: 1, learning_rate: 0.0005}
+    train: {epochs: 1, learning_rate: 0.0002}
     label_smoothing: 0.1
