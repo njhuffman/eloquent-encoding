@@ -106,6 +106,9 @@ def packed_to_board_tensor(packed) -> torch.Tensor:
     """uint8 (N, PACKED_BOARD_LEN) or (PACKED_BOARD_LEN,) -> float32 torch.Tensor (N, 8, 8, 18).
 
     Accepts numpy arrays or torch.Tensors. Always returns a batched tensor.
+    Fully vectorized (no per-sample/per-square Python loop) so it is cheap on the
+    training hot path. Behaviour is bit-identical to the scalar reference; the
+    round-trip and real-row tests guard the equivalence.
     """
     if isinstance(packed, torch.Tensor):
         p = packed.detach().cpu().numpy().astype(np.uint8)
@@ -119,41 +122,40 @@ def packed_to_board_tensor(packed) -> torch.Tensor:
     if p.shape[1] != PACKED_BOARD_LEN:
         raise ValueError(f"expected packed length {PACKED_BOARD_LEN}, got {p.shape[1]}")
 
-    out = np.zeros((n, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS), dtype=np.float32)
+    # Unpack 64 nibbles: two per byte, little-nibble first (even sq -> low, odd sq -> high).
+    nib_bytes = p[:, :32]
+    nibs = np.empty((n, 64), dtype=np.uint8)
+    nibs[:, 0::2] = nib_bytes & 0x0F
+    nibs[:, 1::2] = nib_bytes >> 4
+    if np.any(nibs > 12):
+        raise ValueError(f"invalid packed nibble {int(nibs[nibs > 12][0])} (must be 0..12)")
 
-    for i in range(n):
-        row = p[i]
-        for sq in range(64):
-            bi = sq // 2
-            nib = int(row[bi] & 0x0F) if sq % 2 == 0 else int(row[bi] >> 4) & 0x0F
-            if nib < 0 or nib > 12:
-                raise ValueError(f"invalid packed nibble {nib} at sq {sq}")
-            if nib == 0:
-                continue
-            rank = sq // 8
-            file = sq % 8
-            out[i, rank, file, nib - 1] = 1.0
+    # Flat (N, 64, C) in square-major C order; square sq = rank*8 + file, so a final
+    # reshape to (N, 8, 8, C) yields [n, rank, file, plane] exactly as the reference.
+    out = np.zeros((n, 64, BOARD_CHANNELS), dtype=np.float32)
 
-        meta = int(row[32])
-        if meta & 1:
-            out[i, :, :, 12] = 1.0
-        else:
-            out[i, :, :, 12] = 0.0
-        if meta & 2:
-            out[i, :, :, 13] = 1.0
-        if meta & 4:
-            out[i, :, :, 14] = 1.0
-        if meta & 8:
-            out[i, :, :, 15] = 1.0
-        if meta & 16:
-            out[i, :, :, 16] = 1.0
+    # Piece planes 0..11: one-hot scatter at occupied squares (nibble 1..12 -> plane 0..11).
+    occ = nibs > 0
+    if occ.any():
+        ni, si = np.nonzero(occ)
+        out[ni, si, nibs[ni, si].astype(np.int64) - 1] = 1.0
 
-        ep_sq = int(row[33])
-        if ep_sq < 64:
-            r, f = ep_sq // 8, ep_sq % 8
-            out[i, r, f, 17] = 1.0
+    # Meta byte 32: side-to-move (plane 12) + castling (planes 13..16), broadcast over squares.
+    meta = p[:, 32].astype(np.int64)[:, None]  # (n, 1)
+    out[:, :, 12] = ((meta & 1) > 0).astype(np.float32)
+    out[:, :, 13] = ((meta & 2) > 0).astype(np.float32)
+    out[:, :, 14] = ((meta & 4) > 0).astype(np.float32)
+    out[:, :, 15] = ((meta & 8) > 0).astype(np.float32)
+    out[:, :, 16] = ((meta & 16) > 0).astype(np.float32)
 
-    return torch.from_numpy(out)
+    # Byte 33: en-passant target square (255 = none).
+    ep = p[:, 33].astype(np.int64)
+    has_ep = ep < 64
+    if has_ep.any():
+        ne = np.nonzero(has_ep)[0]
+        out[ne, ep[ne], 17] = 1.0
+
+    return torch.from_numpy(out.reshape(n, BOARD_HEIGHT, BOARD_WIDTH, BOARD_CHANNELS))
 
 
 def legal_mask_float_to_u64(mask: np.ndarray) -> np.uint64:
