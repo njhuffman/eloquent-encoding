@@ -44,3 +44,6 @@ Thumbs.db
 .coverage
 htmlcov/
 .cursor/
+
+# W&B offline run logs
+wandb/
