@@ -1,0 +1,26 @@
+name: tiny_smoke
+checkpoint_dir: style_policy_checkpoints/tiny_smoke
+train_h5: /mnt/eloquence_bulk/databases/j3_training_1M.h5
+val_h5: /mnt/eloquence_bulk/databases/j3_training_1M.h5
+val_sample: {n: 256, seed: 42}
+architecture:
+  d_model: 64
+  n_layers: 2
+  nhead: 4
+  dim_feedforward: 128
+  dropout: 0.0
+  head_hidden: 64
+  elo_dim: 8
+  n_elo_buckets: 40
+defaults:
+  batch_size: 64
+  dataloader_num_workers: 0
+  use_amp: true
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 20
+  seed: 0
+stages:
+  - sample: {n: 2000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0003}
+    label_smoothing: 0.0
