@@ -108,7 +108,7 @@ def packed_to_board_tensor(packed) -> torch.Tensor:
     Accepts numpy arrays or torch.Tensors. Always returns a batched tensor.
     """
     if isinstance(packed, torch.Tensor):
-        p = packed.numpy().astype(np.uint8)
+        p = packed.detach().cpu().numpy().astype(np.uint8)
     else:
         p = np.asarray(packed, dtype=np.uint8)
 

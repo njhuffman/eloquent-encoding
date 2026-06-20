@@ -13,8 +13,10 @@ from style_policy.model_spec import elo_to_bucket
 def _step_loss(model, batch, device, n_elo, label_smoothing):
     packed = batch["packed_pre"].to(device)
     elo_idx = elo_to_bucket(batch["elo_to_move"], n_elo).to(device)
-    from_logits, from_mask = model.forward_from(packed, batch["from_legal_u64"].to(device), elo_idx=elo_idx)
-    to_logits, to_mask = model.forward_to(packed, batch["from_sq"].to(device), batch["to_legal_u64"].to(device), elo_idx=elo_idx)
+    from_logits, from_mask, to_logits, to_mask = model.forward_policy(
+        packed, batch["from_sq"].to(device),
+        batch["from_legal_u64"].to(device), batch["to_legal_u64"].to(device),
+        elo_idx=elo_idx)
     fl = masked_square_ce(from_logits, batch["from_sq"].to(device), from_mask, label_smoothing=label_smoothing)
     tl = masked_square_ce(to_logits, batch["to_sq"].to(device), to_mask, label_smoothing=label_smoothing)
     metrics = {"from_ce": fl.item(), "to_ce": tl.item(),

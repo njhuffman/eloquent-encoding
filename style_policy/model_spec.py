@@ -1,6 +1,5 @@
 """YAML spec: defaults + per-stage deep-merge; elo→bucket mapping. Paths resolve from repo root."""
 from __future__ import annotations
-import copy
 from pathlib import Path
 import torch
 import yaml

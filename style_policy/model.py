@@ -47,3 +47,13 @@ class BasePolicy(nn.Module):
         logits = self.to_head(squares, from_sq, elo_idx=elo_idx)
         mask = u64_to_mask(to_legal_u64).to(logits.device)
         return logits.masked_fill(~mask, _NEG), mask
+
+    def forward_policy(self, packed_pre, from_sq, from_legal_u64, to_legal_u64, *, elo_idx=None):
+        """Encode once; return (from_logits, from_mask, to_logits, to_mask), all legality-masked."""
+        _, squares = self.encode(packed_pre)
+        from_logits = self.from_head(squares, elo_idx=elo_idx)
+        from_mask = u64_to_mask(from_legal_u64).to(from_logits.device)
+        to_logits = self.to_head(squares, from_sq, elo_idx=elo_idx)
+        to_mask = u64_to_mask(to_legal_u64).to(to_logits.device)
+        return (from_logits.masked_fill(~from_mask, float("-inf")), from_mask,
+                to_logits.masked_fill(~to_mask, float("-inf")), to_mask)
