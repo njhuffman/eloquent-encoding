@@ -22,6 +22,8 @@ defaults:
   weight_decay: 0.01
   max_gradient_norm: 1.0
   log_interval: 50
+  val_interval: 2000          # ~every few minutes at ~77ms/step; validation on val_h5 subset
+  checkpoint_interval: 2000   # resumable checkpoint cadence (resume with: --resume)
   gradient_accumulation_steps: 2
   seed: 0
 stages:

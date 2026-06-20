@@ -19,6 +19,8 @@ defaults:
   weight_decay: 0.01
   max_gradient_norm: 1.0
   log_interval: 20
+  val_interval: 10          # steps between validation passes (0 = only at end)
+  checkpoint_interval: 15   # steps between resumable checkpoint saves (0 = only at end)
   seed: 0
 stages:
   - sample: {n: 2000, seed: 1}

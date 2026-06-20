@@ -13,6 +13,8 @@ def main() -> int:
     ap.add_argument("--model", required=True)
     ap.add_argument("--stage", type=int, required=True)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--resume", action="store_true",
+                    help="Resume this stage from its {name}_stage_{K}.resume.pt if present")
     args = ap.parse_args()
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     spec = load_spec(args.model)
@@ -24,7 +26,7 @@ def main() -> int:
         print(f"Saved {out}"); return 0
     if not (1 <= args.stage <= len(spec["stages"])):
         print(f"--stage out of range (1..{len(spec['stages'])})", file=sys.stderr); return 1
-    train_one_stage(spec, args.stage, device)
+    train_one_stage(spec, args.stage, device, resume=args.resume)
     return 0
 
 
