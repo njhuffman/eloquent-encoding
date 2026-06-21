@@ -6,6 +6,30 @@ the broader project context.
 
 ---
 
+## 2026-06-21 — Maia-2 head-to-head on our val set (true apples-to-apples)
+
+**TL;DR:** Ran Maia-2 (rapid) on the SAME 1500 val positions our model sees. Real gap is
+only ~2pts — the closeness is genuine, not a test-set artifact.
+
+| model | params | train data | full-move top1 | ≥5-legal |
+|---|---|---|---|---|
+| ours base_32M | 6.8M | 32M | 50.3% | 48.6% |
+| Maia-2 rapid | ~22M | ~9B | 52.5% | 51.1% |
+
+- Maia scores ~52.5% on OUR val ≈ its published ~53% → our val isn't easier; our 48-50%
+  is legit. Single-legal positions only 1.1%; ≥5-legal cut preserves the ~2.5pt gap.
+- Agreement: both 43.5%, neither 40.8%, ours-only 6.7%, maia-only 8.9% (partly different
+  errors; we're not dominated).
+- Caveats (both widen true gap slightly): we passed Maia elo_oppo=elo_self (we never
+  stored opponent elo); our val is our exact training distribution (home-field).
+- Method: isolated venv `pip install maia2` (+ undeclared deps: torch, chess, gdown,
+  pyzstd, pyyaml, einops, sklearn, pandas). packed->FEN reconstruction validated (human
+  move legal 300/300). Scripts: /tmp/maia_eval.py (venv), /tmp/ours_eval.py (main env).
+- Follow-up: rerun vs the 22M bigger model (Maia's size) when it finishes — isolates
+  data/recipe from capacity.
+
+---
+
 ## 2026-06-21 — 32M run + scaling curve (4M → 16M → 32M)
 
 **TL;DR:** Built `j3_training_32M` (sharded parallel build, ~2h) and trained `base_32M`
