@@ -6,6 +6,35 @@ the broader project context.
 
 ---
 
+## 2026-06-21 — Data-scaling probe (4M vs 16M)
+
+**TL;DR:** 4M unique positions → **30.5%** full-move val; 16M → **43.6%**. A large ~13pt
+gap → **not data-saturated at 16M**; scaling data helps. Equal-compute check shows the
+gain tracks *unique data consumed* (not a compute/config artifact).
+
+Same recipe as `base_16M` (bf16, lr 2e-4, warmup+cosine→0, batch 256, same val set),
+only difference = 4M positions (1 epoch, warmup scaled to 250 = same 1.6%). Run wandb
+`me5n9pr1`.
+
+| run | data | steps | val_loss | full_top1 | from_top1 | to_top1 |
+|---|---|---|---|---|---|---|
+| base_4M | 4M | 15,625 | 2.31 | 30.5% | 45.4% | 69.2% |
+| base_16M | 16M | 62,500 | 1.85 | 43.6% | 55.8% | 78.3% |
+
+**Compute-confound check (equal steps):** at ~16k steps both have consumed ~4M unique
+positions; they're ~tied — base_4M-final 30.5% (annealed) vs base_16M@16k 32.8% (not
+annealed). So 16M's advantage isn't a config artifact; it comes from continuing to
+consume fresh data (32.8%→43.6% over steps 16k→62.5k). Gain tracks unique-data-consumed,
+no flattening by 16M. (Fully-airtight freshness-vs-steps test = 4M×4-epoch control; not
+yet run.)
+
+**Implication / next:** scaling data is well-motivated. Beyond 16M needs a data *build*
+(file is 16M rows; raw PGNs on volume, pipeline exists). Suggested: an **8M subset run**
+first (no build, ~1.4h) for a 3-point curve to confirm gains are still steep at 16M
+before building 32M; if flattening, scale model instead.
+
+---
+
 ## 2026-06-20 — First complete base policy run (`base_16M`)
 
 **TL;DR:** Trained the first end-to-end `style_policy` base move-predictor. Held-out
