@@ -6,6 +6,37 @@ the broader project context.
 
 ---
 
+## 2026-06-21 — 32M run + scaling curve (4M → 16M → 32M)
+
+**TL;DR:** Built `j3_training_32M` (sharded parallel build, ~2h) and trained `base_32M`
+(identical recipe, warmup scaled to 1.6%). Held-out **full_top1 = 48.5%**. Scaling still
+pays (16M→32M = +4.9pts) but with mild diminishing returns.
+
+| data | val_loss | full_top1 | from_top1 | to_top1 |
+|---|---|---|---|---|
+| 4M | 2.31 | 30.5% | 45.4% | 69.2% |
+| 16M | 1.85 | 43.6% | 55.8% | 78.3% |
+| 32M | 1.66 | 48.5% | 59.9% | 80.7% |
+
+Gains/doubling: ~6.5pts (4M→16M) → 4.9pts (16M→32M). Diminishing but not flat. 32M is
+~4.5pts under Maia-2's ~53% with ~1/280th its data and a ~3-4x smaller model.
+
+**Build notes:** sharded across 10 cores (1 elo stratum/shard) of 22; ~1h47m. Bottleneck
+was python-chess parse (~60 games/s/shard, uniform). Merge shuffles rows in memory
+(seed 12345). Dataset is a game-level superset of 16M; ply sampling differs from a
+single-process build (shards use stratum_index=0) — irrelevant to the scaling result.
+Recipe: `dataset_generation/j3_training_32M.yaml`. Run wandb `ax920dpz`. lr 2e-4/bf16
+stable throughout.
+
+**Data availability:** all 5 months counted (Jan–May 2025), each ~9.3–10.4M rapid games,
+smallest bucket (1000–1099) ≥ ~490k/month. → 64M = Jan+Feb, ~200M possible from all 5.
+
+**Next (open):** (1) 64M (Jan+Feb) to continue the data curve (~+3-4pts expected); (2)
+bigger model at 32M to test whether capacity (6.8M params) is now the binding constraint
+— leaning this, given diminishing data returns + small model. Do both to disambiguate.
+
+---
+
 ## 2026-06-21 — Data-scaling probe (4M vs 16M)
 
 **TL;DR:** 4M unique positions → **30.5%** full-move val; 16M → **43.6%**. A large ~13pt
