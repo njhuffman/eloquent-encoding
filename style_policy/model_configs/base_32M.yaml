@@ -1,0 +1,39 @@
+# Data-scaling point: identical to base_16M except the dataset (32M, 1 epoch) and warmup
+# scaled to the same ~1.6% fraction (2000/125000, matching 16M's 1000/62500 and 4M's 250/15625).
+# Same lr/schedule/dtype/batch/arch/val-set -> 4M -> 16M -> 32M is a clean scaling series.
+name: base_32M
+checkpoint_dir: style_policy_checkpoints/base_32M
+train_h5: /mnt/eloquence_bulk/databases/j3_training_32M.h5
+val_h5: /mnt/eloquence_bulk/databases/j3_validation_1M.h5
+val_sample: {n: 10000, seed: 42}
+wandb:
+  project: style_policy
+  mode: online
+architecture:
+  d_model: 256
+  n_layers: 8
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  head_hidden: 512
+  elo_dim: 32
+  n_elo_buckets: 40
+defaults:
+  batch_size: 256
+  dataloader_num_workers: 4
+  use_amp: true
+  amp_dtype: bf16
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 50
+  val_interval: 1000
+  checkpoint_interval: 1000
+  gradient_accumulation_steps: 1
+  lr_schedule: cosine
+  warmup_steps: 2000          # ~1.6% of 125000 steps (matches 16M 1000/62500, 4M 250/15625)
+  lr_min_frac: 0.0
+  seed: 0
+stages:
+  - sample: {n: 32000000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0002}
+    label_smoothing: 0.1
