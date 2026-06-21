@@ -1,0 +1,80 @@
+# Dev Log — eloquent-encoding / style_policy
+
+Running log of substantive results and lessons. Newest entries on top. See
+`docs/superpowers/plans/` for the implementation plan and `MEMORY`/CLAUDE notes for
+the broader project context.
+
+---
+
+## 2026-06-20 — First complete base policy run (`base_16M`)
+
+**TL;DR:** Trained the first end-to-end `style_policy` base move-predictor. Held-out
+**full-move top-1 = 43.6%** (elo-always-known). Recipe that works: **bf16 AMP, AdamW
+lr 2e-4 with warmup+cosine**. Two failure modes found and fixed along the way (fp16
+overflow; lr-too-high divergence).
+
+### What the model is
+- **Arch:** `BasePolicy` — 8-layer Transformer encoder over 64 square tokens + CLS,
+  two pointer heads (from-square, then to-square conditioned on the chosen from), elo
+  bucket-embedding conditioning. ~**6.8M params** (transformer is ~6.34M).
+- **Objective:** `from_ce + to_ce`, masked cross-entropy over *legal* squares,
+  label_smoothing 0.1 (smoothed over legal squares only). Supervised behavioral cloning
+  of human moves. No JEPA/recon/aux losses. `to_head` is teacher-forced on the true
+  from-square during training.
+- **Data:** `j3_training_16M.h5` (16M positions, 1 epoch), val `j3_validation_1M.h5`.
+  Reused existing on-disk jepa3-packed format (no rebuild). **Elo always known** (the
+  deliberate "easier case" first; elo-dropout / optional-elo deferred).
+
+### Training config (the one that worked)
+- batch 256, AMP **bf16**, AdamW lr **2e-4**, **warmup 1000 + cosine decay to 0**,
+  wd 0.01, grad-clip 1.0, ~62.5k steps. ~**2.8 h** on the laptop RTX 500 Ada (4GB; peak
+  VRAM ~1.4GB, GPU ~92–98% util). Run: wandb `88zprkn9`.
+
+### Result (held-out validation)
+| metric | value |
+|---|---|
+| **full_top1 (full move)** | **43.6%** |
+| from_top1 (which piece) | 55.8% |
+| to_top1 (where, given piece) | 78.3% |
+| val loss (from_ce+to_ce) | 1.85 (1.25 + 0.61) |
+
+Checkpoints: `style_policy_checkpoints/base_16M/base_16M_stage_1.{best,}.pt`.
+
+### Maia-2 comparison
+Maia-2: ResNet+skill-attention, ~20–30M params (not officially reported), **9.15B
+positions / 168.9M games**, ~**53%** full-move top-1. Ours reaches **43.6%** with a
+**6.8M model on 16M positions** (~0.2% of Maia-2's data) — ~82% of its accuracy at a
+tiny fraction of scale. Rough comparison (different val sets) but an encouraging baseline.
+
+### Data-signal read (do we need more data?) — inconclusive
+Val loss: 2.65(6k)→2.18(18k)→2.00(30k)→1.90(42k)→1.851(62.5k). Decelerating
+(−0.47,−0.18,−0.10,−0.04,−0.007 per 12k) but still improving; no hard plateau. **The
+tail flattening is confounded by cosine LR→0**, so saturation can't be read off this
+single curve. No overfitting (val<train is a label-smoothing artifact: train loss is
+smoothed, val isn't). Lean: entering diminishing returns; bottleneck (data vs the 6.8M
+capacity) is undetermined. **Definitive test = 4M vs 16M, same schedule, compare final
+val.**
+
+### Failure modes found & fixed (the expensive lessons)
+1. **fp16 AMP overflow → silent freeze.** First run's loss went NaN at ~step 10.8k and
+   silently froze for thousands of steps (GradScaler skips NaN steps; GPU stayed 97%
+   busy; flat metrics). Root cause = fp16 forward overflow (max 65504), NOT bad weights
+   (max|w|=3.4) — proven: identical weights give loss NaN(fp16)/4.38(bf16)/2.63(fp32).
+   **Fix:** default AMP → **bf16** (fp32 exponent range; no GradScaler). Added a
+   fail-fast non-finite-loss guard so silent flatline can't recur. *(commit 5712863)*
+2. **lr 5e-4 too high → divergence.** bf16 run then *diverged* (loss exploded
+   3.1→260k, accuracy collapsed) at ~step 5.7k. bf16's lower mantissa precision makes
+   aggressive LR more divergence-prone than fp16. warmup+cosine alone doesn't help (LR
+   still ~5e-4 at the divergence point). **Fix:** peak lr **5e-4 → 2e-4**. *(commit
+   73a9bbc)* The 2e-4 run sailed through the danger zone, loss monotonically down.
+
+### Infra added this session
+- W&B logging (optional `wandb:` block; auto GPU/CPU/VRAM). `full_top1` metric
+  (honest joint from+to). Step-driven loop with periodic validation + resumable
+  checkpoints (`--resume`) + warmup/cosine LR schedule. Vectorized board decode (~6×;
+  GPU no longer starved).
+
+### Open / next
+- **Held-out-elo run** (the harder case; measure cost vs this 43.6% elo-known baseline).
+- **Saturation probe** (4M vs 16M final val) to settle data-vs-capacity.
+- **Phase 2: style buckets via EM** (the actual differentiator over Maia).
