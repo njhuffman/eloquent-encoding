@@ -1,0 +1,37 @@
+# 64M data-scaling dataset: 2x j3_training_32M. Jan + Feb 2025, each contributing 400k
+# games/stratum (every month-bucket has >=489k, so 400k each is feasible) -> 800k/stratum
+# total x 10 strata x 8 samples = 64M. The Jan half is identical to j3_training_32M, so
+# 64M is a superset of 32M (clean scaling). Built sharded (10 strata x 2 source_plans).
+name: j3_training_64M
+
+master_seed: 1
+time_control: 600+0
+bucket_by: white
+skip_opening_plies: 4
+exclude_single_legal_move: false
+
+source_plans:
+  - source: lichess_db_standard_rated_2025-01_tc_600_0.pgn.zst
+    strata:
+      - {elo_min: 1000, elo_max: 1099, take_games: 400000, samples_per_game: 8, stratum_seed: 1001}
+      - {elo_min: 1100, elo_max: 1199, take_games: 400000, samples_per_game: 8, stratum_seed: 1002}
+      - {elo_min: 1200, elo_max: 1299, take_games: 400000, samples_per_game: 8, stratum_seed: 1003}
+      - {elo_min: 1300, elo_max: 1399, take_games: 400000, samples_per_game: 8, stratum_seed: 1004}
+      - {elo_min: 1400, elo_max: 1499, take_games: 400000, samples_per_game: 8, stratum_seed: 1005}
+      - {elo_min: 1500, elo_max: 1599, take_games: 400000, samples_per_game: 8, stratum_seed: 1006}
+      - {elo_min: 1600, elo_max: 1699, take_games: 400000, samples_per_game: 8, stratum_seed: 1007}
+      - {elo_min: 1700, elo_max: 1799, take_games: 400000, samples_per_game: 8, stratum_seed: 1008}
+      - {elo_min: 1800, elo_max: 1899, take_games: 400000, samples_per_game: 8, stratum_seed: 1009}
+      - {elo_min: 1900, elo_max: 1999, take_games: 400000, samples_per_game: 8, stratum_seed: 1010}
+  - source: lichess_db_standard_rated_2025-02_tc_600_0.pgn.zst
+    strata:
+      - {elo_min: 1000, elo_max: 1099, take_games: 400000, samples_per_game: 8, stratum_seed: 2001}
+      - {elo_min: 1100, elo_max: 1199, take_games: 400000, samples_per_game: 8, stratum_seed: 2002}
+      - {elo_min: 1200, elo_max: 1299, take_games: 400000, samples_per_game: 8, stratum_seed: 2003}
+      - {elo_min: 1300, elo_max: 1399, take_games: 400000, samples_per_game: 8, stratum_seed: 2004}
+      - {elo_min: 1400, elo_max: 1499, take_games: 400000, samples_per_game: 8, stratum_seed: 2005}
+      - {elo_min: 1500, elo_max: 1599, take_games: 400000, samples_per_game: 8, stratum_seed: 2006}
+      - {elo_min: 1600, elo_max: 1699, take_games: 400000, samples_per_game: 8, stratum_seed: 2007}
+      - {elo_min: 1700, elo_max: 1799, take_games: 400000, samples_per_game: 8, stratum_seed: 2008}
+      - {elo_min: 1800, elo_max: 1899, take_games: 400000, samples_per_game: 8, stratum_seed: 2009}
+      - {elo_min: 1900, elo_max: 1999, take_games: 400000, samples_per_game: 8, stratum_seed: 2010}
