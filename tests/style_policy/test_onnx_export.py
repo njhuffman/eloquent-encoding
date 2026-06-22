@@ -25,3 +25,37 @@ def test_export_wrappers_match_eager():
         assert torch.allclose(fh(squares, elo), policy.from_head(squares, elo_idx=elo), atol=1e-5)
         fsq = torch.tensor([0, 4], dtype=torch.long)
         assert torch.allclose(th(squares, fsq, elo), policy.to_head(squares, fsq, elo_idx=elo), atol=1e-5)
+
+
+import numpy as np, onnxruntime as ort, chess
+from pathlib import Path
+from scripts.export_onnx import export_fp32, board_tensor_for_fen
+from style_policy.model import BasePolicy
+from style_policy.model_spec import elo_to_bucket
+
+CKPT = "style_policy_checkpoints/base_64M/base_64M_stage_1.pt"
+FENS = [chess.STARTING_FEN,
+        "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        "8/8/8/4k3/8/4K3/4P3/8 w - - 0 1"]
+
+def test_fp32_onnx_parity(tmp_path):
+    ck = torch.load(CKPT, map_location="cpu")
+    policy = BasePolicy.from_config(ck["architecture"]); policy.load_state_dict(ck["model"]); policy.eval()
+    export_fp32(CKPT, tmp_path)
+    enc = ort.InferenceSession(str(tmp_path / "encode.onnx"))
+    fh = ort.InferenceSession(str(tmp_path / "from_head.onnx"))
+    th = ort.InferenceSession(str(tmp_path / "to_head.onnx"))
+    for fen in FENS:
+        bt = board_tensor_for_fen(fen)
+        elo = np.array([15], dtype=np.int64)
+        with torch.no_grad():
+            _, sq_ref = policy.encoder(torch.from_numpy(bt))
+            fl_ref = policy.from_head(sq_ref, elo_idx=torch.from_numpy(elo)).numpy()
+        sq = enc.run(None, {"board_tensor": bt})[0]
+        assert np.allclose(sq, sq_ref.numpy(), atol=1e-4)
+        fl = fh.run(None, {"squares": sq, "elo_idx": elo})[0]
+        assert np.allclose(fl, fl_ref, atol=1e-4)
+        fsq = np.array([int(fl_ref.argmax())], dtype=np.int64)
+        tl = th.run(None, {"squares": sq, "from_sq": fsq, "elo_idx": elo})[0]
+        tl_ref = policy.to_head(sq_ref, torch.from_numpy(fsq), elo_idx=torch.from_numpy(elo)).detach().numpy()
+        assert np.allclose(tl, tl_ref, atol=1e-4)
