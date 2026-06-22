@@ -19,3 +19,6 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.
 # JEPA training dashboard (FastAPI / uvicorn)
 COPY requirements-dashboard.txt /tmp/requirements-dashboard.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-dashboard.txt && rm /tmp/requirements-dashboard.txt
+
+# ONNX export + runtime (web-bot tooling)
+RUN pip install --no-cache-dir "onnx>=1.16" "onnxruntime>=1.18"
