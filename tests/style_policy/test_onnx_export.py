@@ -78,3 +78,13 @@ def test_int8_parity_top1(tmp_path):
         fl = fh.run(None, {"squares": sq, "elo_idx": elo})[0]
         assert int(fl.argmax()) == int(fl_ref.argmax())          # top-1 from-square preserved
         assert np.allclose(fl, fl_ref, atol=0.15)
+
+
+def test_fixtures_written(tmp_path, monkeypatch):
+    from scripts.gen_web_fixtures import build_cases
+    cases = build_cases(CKPT, FENS, elo=1500)
+    assert len(cases["cases"]) == len(FENS)
+    c = cases["cases"][0]
+    assert len(c["board_tensor"]) == 8 * 8 * 18
+    assert len(c["from_logits"]) == 64 and len(c["legal_from"]) == 64
+    assert c["bucket"] == 15
