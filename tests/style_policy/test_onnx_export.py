@@ -59,3 +59,22 @@ def test_fp32_onnx_parity(tmp_path):
         tl = th.run(None, {"squares": sq, "from_sq": fsq, "elo_idx": elo})[0]
         tl_ref = policy.to_head(sq_ref, torch.from_numpy(fsq), elo_idx=torch.from_numpy(elo)).detach().numpy()
         assert np.allclose(tl, tl_ref, atol=1e-4)
+
+
+def test_int8_parity_top1(tmp_path):
+    from scripts.export_onnx import export_fp32, quantize_and_check, board_tensor_for_fen
+    ck = torch.load(CKPT, map_location="cpu")
+    policy = BasePolicy.from_config(ck["architecture"]); policy.load_state_dict(ck["model"]); policy.eval()
+    export_fp32(CKPT, tmp_path / "fp32")
+    quantize_and_check(tmp_path / "fp32", tmp_path / "int8")
+    enc = ort.InferenceSession(str(tmp_path / "int8" / "encode_int8.onnx"))
+    fh = ort.InferenceSession(str(tmp_path / "int8" / "from_head_int8.onnx"))
+    for fen in FENS:
+        bt = board_tensor_for_fen(fen); elo = np.array([15], dtype=np.int64)
+        with torch.no_grad():
+            _, sq_ref = policy.encoder(torch.from_numpy(bt))
+            fl_ref = policy.from_head(sq_ref, elo_idx=torch.from_numpy(elo)).numpy()
+        sq = enc.run(None, {"board_tensor": bt})[0]
+        fl = fh.run(None, {"squares": sq, "elo_idx": elo})[0]
+        assert int(fl.argmax()) == int(fl_ref.argmax())          # top-1 from-square preserved
+        assert np.allclose(fl, fl_ref, atol=0.15)

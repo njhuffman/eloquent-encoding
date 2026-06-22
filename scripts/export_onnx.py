@@ -42,13 +42,32 @@ def export_fp32(checkpoint_path: str, out_dir) -> dict:
     return {"d_model": d, "n_elo_buckets": int(ck["architecture"]["n_elo_buckets"])}
 
 
+def quantize_and_check(fp32_dir, out_dir) -> dict:
+    from onnxruntime.quantization import quantize_dynamic, QuantType
+    fp32_dir = Path(fp32_dir); out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for name in ("encode", "from_head", "to_head"):
+        dst = out_dir / f"{name}_int8.onnx"
+        quantize_dynamic(str(fp32_dir / f"{name}.onnx"), str(dst), weight_type=QuantType.QInt8)
+        total += dst.stat().st_size
+    return {"size_bytes": total}
+
+
 def main() -> int:
+    import json
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default="style_policy_checkpoints/base_64M/base_64M_stage_1.pt")
     ap.add_argument("--out", default="build/onnx")
     args = ap.parse_args()
     meta = export_fp32(args.checkpoint, args.out)
     print("exported fp32 ->", args.out, meta)
+    fp32 = Path(args.out)
+    web_pub = Path("web/public"); web_pub.mkdir(parents=True, exist_ok=True)
+    info = quantize_and_check(fp32, web_pub)
+    (web_pub / "model_meta.json").write_text(json.dumps(
+        {"d_model": meta["d_model"], "n_elo_buckets": meta["n_elo_buckets"],
+         "files": ["encode_int8.onnx", "from_head_int8.onnx", "to_head_int8.onnx"]}))
+    print("int8 deploy artifacts ->", web_pub, info)
     return 0
 
 
