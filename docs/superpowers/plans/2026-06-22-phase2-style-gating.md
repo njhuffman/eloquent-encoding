@@ -42,7 +42,20 @@ games (enough players with ≥10 games for stable per-player profiles). CPU job;
 PGN-streaming tooling (`scripts/pgn_zst_white_elo_histogram.py`) is the starting point —
 extend from header-only to header + move-stats.
 
-## Style features v0 (hand-crafted, per game → aggregated per player)
+## Unit of analysis: (player, color), not player
+
+Profile each player **separately by color** — a White-profile (from their games as White)
+and a Black-profile (as Black) — since players often have distinct styles/repertoires by
+color. Each game contributes White's moves to `(white_id, "white")` and Black's moves to
+`(black_id, "black")`. Bonus signal: comparing a player's White vs Black profiles directly
+tests whether color-dependent style is real.
+
+Implementation note: v0 features are computed from **SAN move strings via regex** (no
+python-chess board replay) — captures (`x`), checks (`+`/`#`), castles (`O-O`), piece type
+(first char), destination square (board advancement). Fast (minutes). Board-derived
+features (sacrifice, material swing) are deferred to v1, only if the gate passes.
+
+## Style features v0 (hand-crafted, per game → aggregated per (player, color))
 
 Candidate axes (map to "positional/tactical, passive/aggressive"):
 - **Aggression:** capture rate, check-giving rate, sacrifice rate (material given up w/o
