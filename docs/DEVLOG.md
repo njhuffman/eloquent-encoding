@@ -6,6 +6,37 @@ the broader project context.
 
 ---
 
+## 2026-06-22 — Data scaling concludes + capacity test (base validated; pivot to style)
+
+**TL;DR:** Full scaling curve done. Data is the primary lever but now diminishing; the
+6.8M base plateaus ~50.5% on 64M, ~2pts under Maia at equal model size. Base is validated
+and Maia-competitive — stopping base scaling, pivoting to Phase-2 style. All numbers from
+ONE consistent eval (fp32, n=10000 val seed42); bf16==fp32 confirmed (earlier JSON values
+agreed).
+
+| model | params | data | full-move top1 |
+|---|---|---|---|
+| base_4M | 6.8M | 4M | 30.5% |
+| base_16M | 6.8M | 16M | 43.7% |
+| base_32M | 6.8M | 32M | 48.5% |
+| base_64M | 6.8M | 64M | 50.5% |
+| base_32M_big | 22M | 32M | 50.4% |
+
+- **Data gains/doubling: +6.6 → +4.8 → +2.0** (16M→32M→64M). Clearly diminishing.
+- **Capacity (3.3x params @32M): +1.9pts.** 64M-small (50.5%) ≈ 32M-big (50.4%): data and
+  capacity give similar returns here, both tapped out individually.
+- **Maia-2 (rapid) on the SAME positions:** 52.5%. So at equal ~22M size, Maia leads ~3pts
+  — purely its ~280x data. Last ~2pts need data+model TOGETHER (coupled), or a new approach.
+- **Decision:** raw accuracy was never the goal; the base is competent + Maia-competitive,
+  which is all the style work needs. Stop scaling the base; start Phase-2 (style).
+
+**Build/infra notes:** j3_training_64M built (Jan+Feb, 800k games/stratum, sharded 10-way
++ shuffled merge; recipe dataset_generation/j3_training_64M.yaml). Container CUDA dropped
+again post-run (NVML "Unknown Error") — needs `docker restart` before next GPU job; eval
+runs on CPU. Re-eval harness: load checkpoint -> forward_policy -> argmax from/to vs human.
+
+---
+
 ## 2026-06-21 — Maia-2 head-to-head on our val set (true apples-to-apples)
 
 **TL;DR:** Ran Maia-2 (rapid) on the SAME 1500 val positions our model sees. Real gap is
