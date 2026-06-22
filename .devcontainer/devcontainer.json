@@ -23,6 +23,7 @@
       ]
     }
   },
+  "features": { "ghcr.io/devcontainers/features/node:1": { "version": "20" } },
   "remoteUser": "vscode",
   "postCreateCommand": "sudo mkdir -p /mnt/eloquence_bulk/jepa_checkpoints /mnt/eloquence_bulk/databases && sudo chown -R vscode:vscode /mnt/eloquence_bulk && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -r requirements-dashboard.txt"
 }
