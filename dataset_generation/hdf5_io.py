@@ -6,6 +6,72 @@ import h5py
 import numpy as np
 
 CHUNK = 8192
+PACKED_LEN = 34
+
+
+class PackedBatchWriter:
+    """Append rows to a new HDF5 in the packed training schema (+ opp_elo, result)."""
+
+    _SCALAR = (
+        ("from_legal_u64", np.uint64), ("to_legal_u64", np.uint64),
+        ("from_sq", np.uint8), ("to_sq", np.uint8), ("promotion", np.uint8),
+        ("elo_to_move", np.int16), ("opp_elo", np.int16), ("result", np.int8),
+    )
+    COLUMNS = ("packed_pre",) + tuple(n for n, _ in _SCALAR)
+
+    def __init__(self, path: Path, batch_size: int = 1024) -> None:
+        self.path = path
+        self.batch_size = batch_size
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._f = h5py.File(path, "w")
+        self._n = 0
+        self._f.create_dataset("packed_pre", shape=(0, PACKED_LEN), maxshape=(None, PACKED_LEN),
+                               dtype=np.uint8, chunks=(CHUNK, PACKED_LEN), compression="gzip", compression_opts=4)
+        for name, dt in self._SCALAR:
+            self._f.create_dataset(name, shape=(0,), maxshape=(None,), dtype=dt,
+                                   chunks=(CHUNK,), compression="gzip", compression_opts=4)
+        self._buf = {c: [] for c in self.COLUMNS}
+
+    def __enter__(self) -> "PackedBatchWriter":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.flush()
+        self._f.attrs["row_count"] = self._n
+        self._f.close()
+
+    def flush(self) -> None:
+        if not self._buf["packed_pre"]:
+            return
+        m = len(self._buf["packed_pre"])
+        o = self._n
+        for name in self.COLUMNS:
+            d = self._f[name]
+            if name == "packed_pre":
+                d.resize((o + m, PACKED_LEN))
+                d[o : o + m] = np.asarray(self._buf[name], dtype=np.uint8)
+            else:
+                d.resize((o + m,))
+                d[o : o + m] = np.asarray(self._buf[name], dtype=d.dtype)
+            self._buf[name].clear()
+        self._n += m
+
+    def append_row(self, *, packed_pre, from_legal_u64, to_legal_u64, from_sq, to_sq,
+                   promotion, elo_to_move, opp_elo, result) -> None:
+        self._buf["packed_pre"].append(np.asarray(packed_pre, dtype=np.uint8).reshape(PACKED_LEN))
+        self._buf["from_legal_u64"].append(np.uint64(from_legal_u64))
+        self._buf["to_legal_u64"].append(np.uint64(to_legal_u64))
+        self._buf["from_sq"].append(from_sq)
+        self._buf["to_sq"].append(to_sq)
+        self._buf["promotion"].append(promotion)
+        self._buf["elo_to_move"].append(elo_to_move)
+        self._buf["opp_elo"].append(opp_elo)
+        self._buf["result"].append(result)
+        if len(self._buf["packed_pre"]) >= self.batch_size:
+            self.flush()
 
 
 class SampleBatchWriter:
