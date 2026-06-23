@@ -5,6 +5,7 @@ lichess-bot adapter is a thin wrapper over it. Everything uses python-chess type
 """
 from __future__ import annotations
 from abc import ABC, abstractmethod
+import random
 import numpy as np
 import torch
 import chess
@@ -30,7 +31,8 @@ class PolicyBot(Player):
     temperature<1 sharpens toward the argmax (stronger/more deterministic), >1 flattens."""
 
     def __init__(self, checkpoint_path: str, elo: int, *, device: str = "cpu",
-                 temperature: float = 1.0, seed: int | None = None):
+                 temperature: float = 1.0, seed: int | None = None,
+                 opening_book=None, book_threshold: float = 0.01):
         ck = torch.load(checkpoint_path, map_location=device)
         self.model = BasePolicy.from_config(ck["architecture"]).to(device)
         _loaded = self.model.load_state_dict(ck["model"], strict=False)
@@ -43,6 +45,9 @@ class PolicyBot(Player):
         self.temperature = float(temperature)
         self.gen = torch.Generator().manual_seed(seed if seed is not None else 0)
         self._elo_idx = elo_to_bucket(torch.tensor([self.elo]), self.n_elo).to(device)
+        self.opening_book = opening_book
+        self.book_threshold = float(book_threshold)
+        self._book_rng = random.Random(seed if seed is not None else 0)
 
     def _sample(self, logits: torch.Tensor, legal_u64: int) -> int:
         # np.uint64 -> int64 reinterpret (bit pattern preserved) avoids overflow when bit 63 (h8) is set
@@ -54,6 +59,11 @@ class PolicyBot(Player):
 
     @torch.no_grad()
     def choose_move(self, board: chess.Board) -> chess.Move:
+        if self.opening_book is not None:
+            mv = self.opening_book.lookup(board, self.book_threshold, self._book_rng)
+            if mv is not None:
+                return mv
+        # ---- existing model path unchanged below ----
         pk = torch.from_numpy(board_to_packed(board)[None]).to(self.device)
         _, squares = self.model.encode(pk)
         from_sq = self._sample(self.model.from_head(squares, elo_idx=self._elo_idx), legal_from_u64(board))
