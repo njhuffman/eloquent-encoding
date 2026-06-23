@@ -49,6 +49,17 @@ export class Engine {
     return { fromProbs, fromSq, toProbs, toSq };
   }
 
+  async distributions(board: Chess, elo: number) {
+    const sq = await this.squares(board);
+    const eloT = this.elo(elo);
+    const fromLogits = (await this.fh.run({ squares: sq, elo_idx: eloT }))["from_logits"].data;
+    const toLogits = async (fromSq: number) => {
+      const fsqT = new this.ort.Tensor("int64", BigInt64Array.from([BigInt(fromSq)]), [1]);
+      return (await this.th.run({ squares: sq, from_sq: fsqT, elo_idx: eloT }))["to_logits"].data;
+    };
+    return { fromLogits, toLogits };
+  }
+
   async chooseMove(board: Chess, elo: number, opts: { temperature: number; greedy?: boolean; rand?: () => number }) {
     const sq = await this.squares(board);
     const eloT = this.elo(elo);
