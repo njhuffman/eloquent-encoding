@@ -33,6 +33,7 @@ def main() -> int:
     ap.add_argument("--val-h5", required=True)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--n", type=int, default=4000)
+    ap.add_argument("--plot", default=None, help="write a ΔV histogram PNG (disagreement set) to this path")
     args = ap.parse_args()
     dev = args.device
     ck = torch.load(args.checkpoint, map_location=dev)
@@ -96,6 +97,25 @@ def main() -> int:
     # model's own blunders: disagreements where model drops a lot
     mb = dis & (dv_m < -0.1)
     print(f"     model-blunder disagreements (ΔV_model<-0.1): {mb.sum()} ({mb.mean()*100:.1f}% of all positions)")
+
+    if args.plot:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        h, mo = dv_h[dis], dv_m[dis]
+        bins = np.linspace(-0.4, 0.4, 61)
+        fig, ax = plt.subplots(2, 1, figsize=(8, 6), sharex=True, sharey=True)
+        for a, data, label, color in [(ax[0], h, "human move", "#c0392b"), (ax[1], mo, "model move", "#2e7d32")]:
+            a.hist(data, bins=bins, color=color, alpha=0.85)
+            a.axvspan(-0.4, -0.1, color="red", alpha=0.07)   # "blunder" region (ΔV < -0.1)
+            a.axvline(0, color="k", lw=0.8, ls=":")
+            a.axvline(float(data.mean()), color="k", lw=1.3,
+                      label=f"mean={data.mean():+.3f}  | ΔV<-0.1: {(data < -0.1).mean()*100:.1f}%")
+            a.set_ylabel(f"{label}\ncount"); a.legend(loc="upper left", fontsize=9)
+        ax[0].set_title(f"ΔV on disagreement positions (model move ≠ human move), n={int(dis.sum())}")
+        ax[1].set_xlabel("ΔV = change in mover's expected score after the move  (<0 = worse, the left tail is blunders)")
+        fig.tight_layout(); fig.savefig(args.plot, dpi=120)
+        print("wrote", args.plot)
     return 0
 
 
