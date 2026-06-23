@@ -61,3 +61,12 @@ def joint_top1(from_logits, from_target, from_mask, to_logits, to_target, to_mas
     tp = _masked_logits(to_logits, to_mask).argmax(dim=-1)
     correct = (fp == from_target.long()) & (tp == to_target.long())
     return correct.float().mean().item()
+
+
+def wdl_ce(value_logits: torch.Tensor, result: torch.Tensor) -> torch.Tensor:
+    """3-class cross-entropy of WDL logits (order loss/draw/win) vs realized result label."""
+    return F.cross_entropy(value_logits, result.long())
+
+
+def wdl_accuracy(value_logits: torch.Tensor, result: torch.Tensor) -> float:
+    return (value_logits.argmax(dim=-1) == result.long()).float().mean().item()
