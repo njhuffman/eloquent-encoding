@@ -1,7 +1,7 @@
 name: Deploy web bot to Pages
 on:
   push:
-    branches: [main]
+    branches: [main, web-bot]   # web-bot temporarily included to preview the branch on Pages before merge
     paths: ["web/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 permissions:
