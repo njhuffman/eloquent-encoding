@@ -38,3 +38,21 @@ export class OpeningBook {
     return legal[items[items.length - 1][0]];
   }
 }
+
+export class OpeningBookSet {
+  private cache = new Map<number, Promise<OpeningBook | null>>();
+  constructor(private baseUrl: string, private fetchFn: typeof fetch = fetch) {}
+
+  forElo(elo: number): Promise<OpeningBook | null> {
+    const band = eloToBand(elo);
+    let p = this.cache.get(band);
+    if (!p) {
+      p = this.fetchFn(`${this.baseUrl}opening_book/band_${band}.json`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => (d ? new OpeningBook(d.total_games, d.positions) : null))
+        .catch(() => null);
+      this.cache.set(band, p);
+    }
+    return p;
+  }
+}
