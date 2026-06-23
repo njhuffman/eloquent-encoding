@@ -115,6 +115,44 @@ Strength is always games → Elo, cheapest → most authoritative:
    progress signal.
 5. **E** — strength rating when a bot is worth publishing (Lichess) or comparing rigorously.
 
+## Data confounds & future refinements (value target + move sampling)
+
+Sources of noise in the human-outcome signal, and what to do about each. Priority order top-down.
+
+- **Time losses pollute the WDL *label*** (winning position, flag falls → "loss" the board can't
+  explain). At 600+0 (rapid) it's modest but real. **Fix (high value, clean): filter the WDL
+  label to `Termination == "Normal"`** (drop Time forfeit + Abandoned). Keep ALL games for the
+  *policy* (moves are valid regardless of outcome); only the outcome label is poisoned. Needs
+  reading the `Termination` header (not currently parsed).
+- **Opponent elo** — outcome depends on both players; value conditions on mover elo only →
+  marginalizes over opponents = added variance. `opp_elo` is already stored (WDL build Task 1);
+  conditioning on it is the cheapest variance reduction. Small retrain experiment, no rebuild.
+- **Phase-dependent predictability** — opening positions are ≈0.5 with huge variance (outcome
+  undetermined); endgames are sharp. Aggregate WDL log-loss is dominated by inherently
+  unpredictable early positions, so it understates a head that's useful late. **Judge the value
+  by phase (ply buckets) vs the per-elo prior, not by the aggregate.** Add phase-slicing to the
+  A1 gate eval so the plots are read correctly.
+- **Draw-class imbalance** (~4% draws) — the 3-class draw logit is near-useless. Consider an
+  **expected-score** target (W=1/D=0.5/L=0, one regression) — sidesteps the imbalance, still
+  supports the "keep roughly the same value" idea, possibly a cleaner target than 3-class.
+- **Move sampling under time pressure (policy target) — DEFER at 10+0.** Time-scramble moves are
+  rushed/low-quality, but: (a) time-loss games' *non-scramble* moves are good data (often a
+  winning player's good moves) — don't drop games wholesale; (b) the causal variable is the
+  *clock*, not the outcome, so any filter should be clock-based (drop moves under low remaining
+  time), NOT outcome-based (last-N-of-time-loss misses scrambles in won games and over-drops calm
+  endings); (c) **low remaining clock is confounded with position difficulty** — players burn time
+  on hard decisions, so aggressive low-clock filtering would strip the hardest examples (the ones
+  worth keeping). Combined with rapid (10+0) having little scramble and thin per-game sampling
+  (~low-single-digit % of sampled positions affected), expected benefit is small and the
+  difficulty-bias risk is real → leave move sampling as-is for now. If revisited: clock-based,
+  conservative threshold (~<10–15s), and *measure* the contaminated fraction first.
+- **Adjacent low-information moves** (orthogonal to time): **premoves** (instant forced replies,
+  ~0s move time — caught by a move-time signal if clock is ever added) and **forced/near-forced
+  moves** (extend the recipe's `exclude_single_legal_move` / down-weight low-entropy positions).
+- **Inherent, not fixable** (accept): the opponent's future play (one position → one high-variance
+  outcome sample — the dominant difficulty), credit assignment (game outcome attributed to every
+  mid-game position), resignation timing, rating reliability (provisional ratings).
+
 ## Notes on the value-weighted-loss decision (downstream of B)
 
 The dual-loss idea (imitation CE + a value term) is **advantage-weighted behavior cloning**
