@@ -37,6 +37,8 @@ class PackedMoveDataset(Dataset):
             "from_legal_u64": torch.from_numpy(np.array(f["from_legal_u64"][idx], dtype=np.uint64)).to(torch.int64),
             "to_legal_u64": torch.from_numpy(np.array(f["to_legal_u64"][idx], dtype=np.uint64)).to(torch.int64),
             "elo_to_move": torch.tensor(int(f["elo_to_move"][idx]), dtype=torch.int64),
+            "result": torch.tensor(int(f["result"][idx]), dtype=torch.int64),
+            "opp_elo": torch.tensor(int(f["opp_elo"][idx]), dtype=torch.int64),
         }
         for k in _FIELDS_U8:
             out[k] = torch.tensor(int(f[k][idx]), dtype=torch.int64)
