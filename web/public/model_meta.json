@@ -1,0 +1,1 @@
+{"d_model": 256, "n_elo_buckets": 40, "files": ["encode_int8.onnx", "from_head_int8.onnx", "to_head_int8.onnx"]}
