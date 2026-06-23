@@ -209,3 +209,20 @@ Sanity (start-position move %, elo-dependent as expected):
 PolicyBot consults the book (off by default; `opening_book=` + `book_threshold=`, default 1%), samples
 ∝ human frequency while support ≥ threshold, then hands off to the model. Books live in the data dir
 (not committed). Web-bot integration (shipping book JSON as a static asset) is future work.
+
+## Queued / next work (backlog)
+
+1. **WDL 16M gate eval** (immediate, when training finishes): A1 (WDL log-loss vs per-elo prior +
+   policy full-top1 vs base_16M), phase-sliced. Then B1 (ΔV distribution human vs bot) + B2
+   (disagreement-ΔV) per `docs/superpowers/specs/2026-06-23-value-head-evaluation-plan.md`.
+2. **Web opening-book integration** (next web feature, AFTER the gate eval). Make the GitHub Pages
+   bot use the opening book. Three pieces: (a) ship band JSONs as a static asset under
+   `web/public/opening_book/` (~1.8MB total, all 10 bands) and fetch the elo→band file; (b) port
+   `OpeningBook.lookup` to TS (EPD key, support threshold, sample ∝ counts; chess.js already
+   present); (c) wire into `Engine`/`BoardPanel` to consult the book before the model, with the
+   elo→band map + threshold control. KEY RISK: the EPD key must match byte-for-byte between
+   python-chess `board.epd()` (build) and the chess.js `fen()`-minus-counters (play) — needs a
+   parity fixture (like the boardToTensor/ONNX parity), or lookups silently miss. Full
+   brainstorm→spec→plan when picked up (not yet designed).
+3. **Deferred experiments:** opp-elo conditioning for the value head; phase-sliced WDL; expected-score
+   target; checkpoint Elo curve + blunder-rate (incl. on base_4M→64M); move-match-by-rating-band.
