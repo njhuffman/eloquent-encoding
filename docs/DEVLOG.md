@@ -252,3 +252,12 @@ Conclusions: value head is NOT redundant (real ~4.8% model-blunder tail) → val
 (one-sided, shave the negative-ΔV tail) is worth building. Model is modestly stronger than its
 band already (corrects ~83% of noticed human blunders) → fidelity-vs-robustness tension is live
 but mild. Tool: scripts/analyze_dv.py.
+
+## 2026-06-23 — Value-weighted loss PARKED + phase finding
+
+ΔV phase breakdown (disagreement set, blunder = ΔV<-0.1): model beats human every phase, own
+blunders peak in middlegame (9.7% vs human 14.4%), edge SMALLEST in endgame (7.2% vs 9.4%, +2.2pp).
+Signal is real but modest/diffuse (~4.5% of positions, no concentrated fixable failure), measured
+by coarse human-WDL. DECISION: value-weighted loss PARKED — revisit only with an objective value
+(to see endgame mate-misses) or if D1 self-play Elo shows the blunders cost real rating. See
+docs/superpowers/specs/2026-06-23-value-head-evaluation-plan.md (Results + decision).

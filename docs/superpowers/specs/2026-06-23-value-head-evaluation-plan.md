@@ -155,6 +155,14 @@ Sources of noise in the human-outcome signal, and what to do about each. Priorit
 
 ## Notes on the value-weighted-loss decision (downstream of B)
 
+**DECISION (2026-06-23): PARKED — signal too diffuse to justify the build yet.** B1/B2 + the
+phase breakdown (see Results below) show the model's residual blunder edge is real but *modest and
+diffuse* (~4.5% of all positions; +2.2–4.7 pp better than humans across phases, no single
+concentrated/fixable failure mode), and it's measured by a coarse, noisy human-WDL signal. Not a
+slam-dunk. Revisit only if (a) we adopt an **objective value** (centipawn/mate-distance) that can
+see the endgame mate-misses human-WDL hides — the +2.2pp endgame row hints there's more there — or
+(b) a downstream strength eval (D1 self-play Elo) shows the blunders actually cost meaningful Elo.
+
 The dual-loss idea (imitation CE + a value term) is **advantage-weighted behavior cloning**
 (π_human·exp(β·A), tilt-toward-good-moves moved into training). Open design points settled in
 discussion: penalty should be **one-sided** (suppress the catastrophic negative-ΔV tail) for a
@@ -164,3 +172,29 @@ human-WDL value it reduces *gross* blunders but is too blunt for mate-in-one-whi
 needs objective value, which trades away elo-fidelity). β is a tunable dial, not a slide to
 superhuman; ceiling is the value function's quality. Build only if B shows a non-trivial
 `model < human` disagreement cluster.
+
+## Results (2026-06-23, wdl_16M, val n=8000)
+
+- **A1 gate — PASS.** WDL log-loss 0.703 vs per-elo prior 0.829; policy full-move top-1 0.4243 vs
+  base_16M 0.425 (same val set) → no regression. Value head is real and free to the policy.
+- **B1 ΔV distribution — martingale confirmed.** ΔV_human mean −0.003 (≈0 → value calibrated to
+  human play), peaked at 0 with fat tails (1/99 pct ≈ ±0.23 = blunders/good moves). ΔV_model mean
+  +0.007.
+- **B2 disagreement-ΔV.** 58% disagreement; mean(ΔV_model−ΔV_human) on disagreements +0.0175
+  (43% model better / 23% worse / 35% ~equal). At human-blunder disagreements (ΔV_h<−0.1): model
+  better **83%** (population-BC self-correction). Model's own blunder cluster (ΔV_m<−0.1): ~4.5% of
+  all positions. Tools: `scripts/analyze_dv.py --plot/--scatter` (histograms + ΔV_h-vs-ΔV_m scatter,
+  colorable by phase).
+- **Phase breakdown (disagreement-set blunder rate ΔV<−0.1, by non-pawn-material).** Model beats
+  human in every phase; model's own blunders peak in the *middlegame*, and the model's *edge over
+  humans is smallest in the endgame*:
+  | phase | model | human | edge |
+  |---|---|---|---|
+  | opening (npm≥12) | 6.8% | 10.6% | +3.8 |
+  | middlegame (7–11) | 9.7% | 14.4% | +4.7 |
+  | endgame (npm≤6) | 7.2% | 9.4% | +2.2 |
+  Caveat: human-WDL is bluntest in endgames (missed mate in a won position barely moves win-prob),
+  so the endgame row likely *understates* the model's true endgame weakness.
+- **Takeaway:** the model is close to human and only mildly stronger, with no concentrated fixable
+  failure → value-weighted loss PARKED (above). The endgame is the model's relative weak spot but
+  human-WDL can't measure it sharply.
