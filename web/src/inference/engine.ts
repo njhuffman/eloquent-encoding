@@ -1,5 +1,5 @@
 import type { Chess } from "chess.js";
-import { boardToTensor, indexToSquare, squareToIndex } from "./boardTensor";
+import { boardToTensor, indexToSquare } from "./boardTensor";
 import { eloToBucket } from "./elo";
 import { legalFromMask, legalToMask } from "./legal";
 import { maskedSoftmax, pickIndex } from "./sample";
@@ -9,6 +9,22 @@ type OrtLike = {
   InferenceSession: { create(p: string | ArrayBuffer): Promise<Session> };
   Tensor: new (type: string, data: ArrayLike<number> | BigInt64Array, dims: number[]) => any;
 };
+
+// onnxruntime-web's wasm backend has a SINGLE global run guard: if a second
+// run() starts while another is in flight (e.g. the bot's chooseMove racing the
+// panel's topMoves), it throws "Session mismatch". The guard is module-global in
+// the runtime — shared across every session and every Engine instance — so this
+// serialization queue is module-level too, funnelling all runs strictly one at a
+// time. (onnxruntime-node has no such guard, which is why the parity tests missed it.)
+let runQueue: Promise<unknown> = Promise.resolve();
+
+function serializedRun(
+  session: Session, feeds: Record<string, any>,
+): Promise<Record<string, { data: Float32Array }>> {
+  const result = runQueue.then(() => session.run(feeds));
+  runQueue = result.then(() => undefined, () => undefined); // keep the chain alive on success or failure
+  return result;
+}
 
 export class Engine {
   private constructor(
@@ -26,24 +42,29 @@ export class Engine {
     return new Engine(ort, enc, fh, th, meta.nEloBuckets);
   }
 
+  // Serialize a single ORT run behind any in-flight run (module-global queue).
+  private run(session: Session, feeds: Record<string, any>): Promise<Record<string, { data: Float32Array }>> {
+    return serializedRun(session, feeds);
+  }
+
   private elo(elo: number) {
     return new this.ort.Tensor("int64", BigInt64Array.from([BigInt(eloToBucket(elo, this.nEloBuckets))]), [1]);
   }
 
   private async squares(board: Chess) {
     const bt = boardToTensor(board);
-    const out = await this.enc.run({ board_tensor: new this.ort.Tensor("float32", bt, [1, 8, 8, 18]) });
+    const out = await this.run(this.enc, { board_tensor: new this.ort.Tensor("float32", bt, [1, 8, 8, 18]) });
     return out["squares"];
   }
 
   async policy(board: Chess, elo: number) {
     const sq = await this.squares(board);
     const eloT = this.elo(elo);
-    const fl = (await this.fh.run({ squares: sq, elo_idx: eloT }))["from_logits"].data;
+    const fl = (await this.run(this.fh, { squares: sq, elo_idx: eloT }))["from_logits"].data;
     const fromProbs = maskedSoftmax(fl, legalFromMask(board), 1.0);
     const fromSq = pickIndex(fromProbs, { greedy: true });
     const fsqT = new this.ort.Tensor("int64", BigInt64Array.from([BigInt(fromSq)]), [1]);
-    const tl = (await this.th.run({ squares: sq, from_sq: fsqT, elo_idx: eloT }))["to_logits"].data;
+    const tl = (await this.run(this.th, { squares: sq, from_sq: fsqT, elo_idx: eloT }))["to_logits"].data;
     const toProbs = maskedSoftmax(tl, legalToMask(board, fromSq), 1.0);
     const toSq = pickIndex(toProbs, { greedy: true });
     return { fromProbs, fromSq, toProbs, toSq };
@@ -52,10 +73,10 @@ export class Engine {
   async distributions(board: Chess, elo: number) {
     const sq = await this.squares(board);
     const eloT = this.elo(elo);
-    const fromLogits = (await this.fh.run({ squares: sq, elo_idx: eloT }))["from_logits"].data;
+    const fromLogits = (await this.run(this.fh, { squares: sq, elo_idx: eloT }))["from_logits"].data;
     const toLogits = async (fromSq: number) => {
       const fsqT = new this.ort.Tensor("int64", BigInt64Array.from([BigInt(fromSq)]), [1]);
-      return (await this.th.run({ squares: sq, from_sq: fsqT, elo_idx: eloT }))["to_logits"].data;
+      return (await this.run(this.th, { squares: sq, from_sq: fsqT, elo_idx: eloT }))["to_logits"].data;
     };
     return { fromLogits, toLogits };
   }
@@ -63,11 +84,11 @@ export class Engine {
   async chooseMove(board: Chess, elo: number, opts: { temperature: number; greedy?: boolean; rand?: () => number }) {
     const sq = await this.squares(board);
     const eloT = this.elo(elo);
-    const fl = (await this.fh.run({ squares: sq, elo_idx: eloT }))["from_logits"].data;
+    const fl = (await this.run(this.fh, { squares: sq, elo_idx: eloT }))["from_logits"].data;
     const fromSq = pickIndex(maskedSoftmax(fl, legalFromMask(board), opts.temperature),
                              { greedy: !!opts.greedy, rand: opts.rand });
     const fsqT = new this.ort.Tensor("int64", BigInt64Array.from([BigInt(fromSq)]), [1]);
-    const tl = (await this.th.run({ squares: sq, from_sq: fsqT, elo_idx: eloT }))["to_logits"].data;
+    const tl = (await this.run(this.th, { squares: sq, from_sq: fsqT, elo_idx: eloT }))["to_logits"].data;
     const toSq = pickIndex(maskedSoftmax(tl, legalToMask(board, fromSq), opts.temperature),
                            { greedy: !!opts.greedy, rand: opts.rand });
     const from = indexToSquare(fromSq), to = indexToSquare(toSq);

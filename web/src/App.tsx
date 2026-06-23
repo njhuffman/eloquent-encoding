@@ -8,7 +8,7 @@ export function App() {
   const [elo, setElo] = useState(1500);
   const [temperature, setTemperature] = useState(1.0);
   return (
-    <div style={{ maxWidth: 560, margin: "0 auto" }}>
+    <div style={{ maxWidth: 760, margin: "0 auto", padding: 16 }}>
       <h1>Eloquent Bot</h1>
       {error && <p style={{color:"crimson"}}>Failed to load model: {error}</p>}
       {!engine && !error && <p>Loading model…</p>}

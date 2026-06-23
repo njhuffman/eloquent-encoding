@@ -36,8 +36,11 @@ export function BoardPanel({ engine, elo, temperature }:
 
   const onDrop = useCallback((from: string, to: string) => {
     const g = new Chess(game.fen());
-    const res = g.move({ from, to, promotion: "q" });
-    if (!res) return false;
+    try {
+      g.move({ from, to, promotion: "q" }); // chess.js v1 THROWS on an illegal move (doesn't return null)
+    } catch {
+      return false; // reject the drag; react-chessboard snaps the piece back
+    }
     setGame(g);
     void botMove(new Chess(g.fen()));
     return true;
@@ -55,12 +58,13 @@ export function BoardPanel({ engine, elo, temperature }:
 
   return (
     <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-      <div>
+      <div style={{ width: 480 }}>
         <Chessboard
           position={game.fen()}
           onPieceDrop={onDrop}
           arePiecesDraggable={!thinking}
           customSquareStyles={customSquareStyles}
+          boardWidth={480}
         />
         <button onClick={() => setGame(new Chess())}>New game</button>
         {game.isGameOver() && <p>Game over: {game.isCheckmate() ? "checkmate" : "draw"}</p>}
