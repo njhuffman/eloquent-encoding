@@ -9,19 +9,24 @@ def _ucis(*sans):
 
 def test_counts_and_transposition_merge():
     bld = BookBuilder(n_plies=6)
-    # Two move orders reaching the same position after 1.e4 e5 2.Nf3 / 1.Nf3 e5 2.e4
-    bld.add_game(1800, _ucis("e4", "e5", "Nf3"))
-    bld.add_game(1850, _ucis("Nf3", "e5", "e4"))
+    bld.add_game(1800, _ucis("e4", "e5", "Nf3", "Nc6", "Bb5"))
+    bld.add_game(1850, _ucis("Nf3", "Nc6", "e4", "e5", "Bb5"))
     books = bld.finalize(min_support=0.0)
     bk = books[1800]
     assert bk.total_games == 2
     start = chess.Board().epd()
-    # start position seen by both games; its move counts split e4 vs Nf3
     assert bk.positions[start]["n"] == 2
     assert bk.positions[start]["moves"] == {"e2e4": 1, "g1f3": 1}
-    # after 1.e4 e5 2.Nf3 and 1.Nf3 e5 2.e4 the positions transpose -> pooled under one EPD
-    b1 = chess.Board(); [b1.push(m) for m in _ucis("e4", "e5", "Nf3")]
-    assert b1.epd() in bk.positions  # reached by game 1's 3rd ply and game 2's final position
+    # the two move orders transpose after 4 plies; the 5th move (Bb5) is recorded
+    # from that shared position under one EPD key -> pooled
+    merge = chess.Board()
+    for m in _ucis("e4", "e5", "Nf3", "Nc6"):
+        merge.push(m)
+    assert bk.positions[merge.epd()]["n"] == 2
+    assert bk.positions[merge.epd()]["moves"] == {"f1b5": 2}
+    # invariant: every recorded position has sum(move counts) == n (no move-less entries)
+    for e in bk.positions.values():
+        assert sum(e["moves"].values()) == e["n"]
 
 def test_out_of_range_white_elo_ignored():
     bld = BookBuilder(n_plies=4)

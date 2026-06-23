@@ -74,12 +74,6 @@ class BookBuilder:
             u = mv.uci()
             entry["moves"][u] = entry["moves"].get(u, 0) + 1
             board.push(mv)
-            n_played += 1
-        # Record the terminal position (so transpositions that arrive at the same
-        # final board are pooled under one EPD key).
-        if n_played > 0:
-            entry = positions.setdefault(board.epd(), {"n": 0, "moves": {}})
-            entry["n"] += 1
 
     def finalize(self, min_support: float = 0.001) -> dict[int, OpeningBook]:
         out: dict[int, OpeningBook] = {}
