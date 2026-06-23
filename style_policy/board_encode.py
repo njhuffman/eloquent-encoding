@@ -31,6 +31,33 @@ def board_to_packed(board: chess.Board) -> np.ndarray:
     return out
 
 
+def packed_to_board(packed: np.ndarray) -> chess.Board:
+    """Inverse of board_to_packed: uint8 (PACKED_BOARD_LEN,) -> chess.Board.
+
+    Round-trips board_to_packed for the fields the packed format carries (pieces,
+    side-to-move, castling rights, ep square). Move counters are not stored, so the
+    returned board has default halfmove/fullmove clocks — fine for legality + value.
+    """
+    p = np.asarray(packed, dtype=np.uint8)
+    board = chess.Board.empty()
+    for sq in range(64):
+        byte = int(p[sq // 2])
+        nib = (byte & 0x0F) if sq % 2 == 0 else (byte >> 4) & 0x0F
+        if nib == 0:
+            continue
+        color = chess.WHITE if nib <= 6 else chess.BLACK
+        ptype = nib if nib <= 6 else nib - 6
+        board.set_piece_at(sq, chess.Piece(ptype, color))
+    meta = int(p[32])
+    board.turn = chess.WHITE if (meta & 1) else chess.BLACK
+    cr = ("K" if meta & 2 else "") + ("Q" if meta & 4 else "") + \
+         ("k" if meta & 8 else "") + ("q" if meta & 16 else "")
+    board.set_castling_fen(cr if cr else "-")
+    ep = int(p[33])
+    board.ep_square = ep if ep != 255 else None
+    return board
+
+
 def legal_from_u64(board: chess.Board) -> int:
     bb = 0
     for mv in board.legal_moves:
