@@ -50,7 +50,7 @@ def main() -> int:
             return 1
         target = recipe.target_sample_rows()
         with h5py.File(out, "r") as f:
-            n = int(f["fen"].shape[0])
+            n = int(f["packed_pre"].shape[0])
         print(out)
         print(f"rows={n}  recipe_target_rows={target}", file=sys.stderr)
         return 0
