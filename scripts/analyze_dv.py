@@ -47,7 +47,8 @@ def main() -> int:
         idx = elo_to_bucket(torch.tensor([elo_int]), n_elo).to(dev)
         return escore(m.forward_value(pk, elo_idx=idx))
 
-    dv_h, dv_m, agree = [], [], []
+    dv_h, dv_m, agree, npm = [], [], [], []
+    _NONPAWN = (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN)
     for i in range(len(ds)):
         row = ds[i]
         packed = row["packed_pre"].numpy().astype(np.uint8)
@@ -55,6 +56,7 @@ def main() -> int:
         board = packed_to_board(packed)
         if board.is_game_over():
             continue
+        npm_i = sum(1 for p in board.piece_map().values() if p.piece_type in _NONPAWN)
         pk = torch.from_numpy(packed[None]).to(dev)
         eidx = elo_to_bucket(torch.tensor([elo]), n_elo).to(dev)
         _, squares = m.encode(pk)
@@ -79,9 +81,9 @@ def main() -> int:
         bm = board.copy(); bm.push(mmove)
         dvh = (1.0 - value_escore(board_to_packed(bh), opp)) - before
         dvm = (1.0 - value_escore(board_to_packed(bm), opp)) - before
-        dv_h.append(dvh); dv_m.append(dvm); agree.append(mmove == hmove)
+        dv_h.append(dvh); dv_m.append(dvm); agree.append(mmove == hmove); npm.append(npm_i)
 
-    dv_h = np.array(dv_h); dv_m = np.array(dv_m); agree = np.array(agree)
+    dv_h = np.array(dv_h); dv_m = np.array(dv_m); agree = np.array(agree); npm = np.array(npm)
     pct = lambda a: np.percentile(a, [1, 10, 50, 90, 99]).round(3).tolist()
     print(f"n={len(dv_h)}  agreement={agree.mean():.3f}")
     print(f"[B1] ΔV_human: mean={dv_h.mean():+.4f} (martingale~0?) std={dv_h.std():.3f} pct(1/10/50/90/99)={pct(dv_h)}")
@@ -122,11 +124,20 @@ def main() -> int:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        h, mo = dv_h[dis], dv_m[dis]
+        h, mo, nd = dv_h[dis], dv_m[dis], npm[dis]
         lim = 0.5
         fig, ax = plt.subplots(figsize=(7, 7))
-        ax.scatter(h, mo, s=7, alpha=0.18, color="#34495e", edgecolors="none")
-        ax.plot([-lim, lim], [-lim, lim], color="gray", ls="--", lw=1, label="model = human (y=x)")
+        # phase by non-pawn material count (npm, max 14): opening >=12, middlegame 7-11, endgame <=6
+        phases = [("opening (npm≥12)", nd >= 12, "#2980b9"),
+                  ("middlegame (7-11)", (nd >= 7) & (nd <= 11), "#7f8c8d"),
+                  ("endgame (npm≤6)", nd <= 6, "#c0392b")]
+        for name, sel, color in phases:
+            n_ph = int(sel.sum())
+            mb_ph = float((mo[sel] < -0.1).mean()) * 100 if n_ph else 0.0
+            ax.scatter(h[sel], mo[sel], s=8, alpha=0.30, color=color, edgecolors="none",
+                       label=f"{name}: n={n_ph}, model ΔV<-0.1 in {mb_ph:.0f}%")
+            print(f"     phase {name}: n={n_ph}, model-blunder rate {mb_ph:.1f}%, human-blunder {float((h[sel] < -0.1).mean())*100:.1f}%")
+        ax.plot([-lim, lim], [-lim, lim], color="black", ls="--", lw=1, label="model = human (y=x)")
         ax.axhline(0, color="k", lw=0.6, ls=":"); ax.axvline(0, color="k", lw=0.6, ls=":")
         ax.axvspan(-lim, -0.1, color="red", alpha=0.05)    # human blundered (ΔV_human < -0.1)
         ax.axhspan(-lim, -0.1, color="orange", alpha=0.06)  # model blundered (ΔV_model < -0.1)
