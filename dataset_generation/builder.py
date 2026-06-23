@@ -17,10 +17,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from move_predictor.encoding import move_to_from_to, promotion_code
+from dataset_generation.move_encode import move_to_from_to, promotion_code
+from dataset_generation.hdf5_io import PackedBatchWriter
+from style_policy.board_encode import board_to_packed, legal_from_u64, legal_to_u64
 
 from dataset_generation.candidate_collect import board_at_ply, collect_candidate_positions
-from dataset_generation.hdf5_io import SampleBatchWriter
 from dataset_generation.pgn_prefilter import any_unfilled_stratum_may_match, game_matches_stratum
 from dataset_generation.recipe import Recipe, SourcePlan, StratumSpec
 from dataset_generation.resolve import resolve_source_file
@@ -69,9 +70,9 @@ def _sample_indices(
 
 
 def _write_samples_for_stratum(
-    writer: SampleBatchWriter,
+    writer: PackedBatchWriter,
     mainline: list[chess.Move],
-    candidates: list[tuple[int, int, int, chess.Move]],
+    candidates: list[tuple[int, int, int, int, int, chess.Move]],
     *,
     master_seed: int,
     source_plan_index: int,
@@ -87,20 +88,15 @@ def _write_samples_for_stratum(
         )
     rng = _rng_for_game(master_seed, source_plan_index, stratum, stratum_index, g)
     for j in _sample_indices(rng, k, stratum.samples_per_game):
-        ply, stm, elo, move = candidates[j]
+        ply, stm, elo, opp_elo, result, move = candidates[j]
         board = board_at_ply(mainline, ply)
-        fen = board.fen()
         fr, to = move_to_from_to(move)
-        pr = promotion_code(move)
         writer.append_row(
-            fen=fen,
-            side_to_move=stm,
-            elo_to_move=int(elo),
-            from_sq=fr,
-            to_sq=to,
-            promotion=pr,
-            source_plan_index=source_plan_index,
-            stratum_index=stratum_index,
+            packed_pre=board_to_packed(board),
+            from_legal_u64=legal_from_u64(board),
+            to_legal_u64=legal_to_u64(board, fr),
+            from_sq=fr, to_sq=to, promotion=promotion_code(move),
+            elo_to_move=int(elo), opp_elo=int(opp_elo), result=int(result),
         )
 
 
@@ -124,7 +120,7 @@ def _ensure_strata_quotas_met(plan: SourcePlan, accepted: list[int]) -> None:
 
 
 def _process_one_source_plan(
-    writer: SampleBatchWriter,
+    writer: PackedBatchWriter,
     recipe: Recipe,
     *,
     plan_index: int,
@@ -213,7 +209,7 @@ def build_from_recipe(
         out_path.unlink()
 
     try:
-        with SampleBatchWriter(out_path) as writer:
+        with PackedBatchWriter(out_path) as writer:
             for plan_index, plan in enumerate(recipe.source_plans):
                 _process_one_source_plan(
                     writer,
@@ -232,7 +228,7 @@ def build_from_recipe(
 
     expected = recipe.target_sample_rows()
     with h5py.File(out_path, "r") as f:
-        n = int(f["fen"].shape[0])
+        n = int(f["packed_pre"].shape[0])
     if n != expected:
         out_path.unlink(missing_ok=True)
         msg = f"HDF5 row count {n} != recipe target {expected}; removed output"
