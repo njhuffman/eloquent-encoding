@@ -239,3 +239,16 @@ Conclusion: the joint value head learns real position-dependent value and is ess
 the policy. Aggregate WDL log-loss looks modest only because opening-heavy positions are
 inherently ~0.5; phase-sliced eval + the ΔV analyses (B1/B2) are next before any value-weighted
 loss or the 64M scale-up.
+
+## 2026-06-23 — ΔV analysis (B1 distribution + B2 disagreement), wdl_16M on val (n=4000)
+
+B1: ΔV_human mean −0.003 (≈0 → martingale confirmed; value calibrated to human play), peaked at
+0 with fat tails (1/99 pct = −0.24/+0.23 = blunders/good moves). ΔV_model mean +0.006.
+B2: 57% disagreement; mean(ΔV_model−ΔV_human) on disagreements = +0.0165 (43% model better / 23%
+worse / 34% ~equal). At human-blunder disagreements (ΔV_human<−0.1, n=259): model picks better
+83% — population-BC self-correction confirmed. Model's OWN blunder cluster (ΔV_model<−0.1): 4.8%
+of positions.
+Conclusions: value head is NOT redundant (real ~4.8% model-blunder tail) → value-weighted loss
+(one-sided, shave the negative-ΔV tail) is worth building. Model is modestly stronger than its
+band already (corrects ~83% of noticed human blunders) → fidelity-vs-robustness tension is live
+but mild. Tool: scripts/analyze_dv.py.
