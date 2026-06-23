@@ -23,7 +23,9 @@ def export_fp32(checkpoint_path: str, out_dir) -> dict:
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     ck = torch.load(checkpoint_path, map_location="cpu")
     policy = BasePolicy.from_config(ck["architecture"])
-    policy.load_state_dict(ck["model"], strict=False)  # old policy-only checkpoints predate the value head
+    _loaded = policy.load_state_dict(ck["model"], strict=False)
+    assert not _loaded.unexpected_keys and all(k.startswith("value_head") for k in _loaded.missing_keys), \
+        f"checkpoint mismatch: unexpected={_loaded.unexpected_keys} missing={_loaded.missing_keys}"
     enc, fh, th = build_export_modules(policy)
     d = int(ck["architecture"]["d_model"])
 

@@ -12,12 +12,18 @@ from style_policy.model_spec import elo_to_bucket
 from style_policy.loss import joint_top1, wdl_accuracy
 
 
-def prior_logloss_from_results(results: np.ndarray) -> float:
-    """Log-loss of always predicting the global marginal W/D/L distribution."""
-    counts = np.bincount(results.astype(np.int64), minlength=3).astype(np.float64)
-    p = counts / counts.sum()
+def prior_logloss_from_results(results: np.ndarray, buckets: np.ndarray) -> float:
+    """Log-loss of predicting each row's per-elo-bucket marginal W/D/L distribution."""
+    results = np.asarray(results, dtype=np.int64)
+    buckets = np.asarray(buckets, dtype=np.int64)
     eps = 1e-12
-    return float(-np.mean([math.log(max(p[int(r)], eps)) for r in results]))
+    total = 0.0
+    for b in np.unique(buckets):
+        mask = buckets == b
+        counts = np.bincount(results[mask], minlength=3).astype(np.float64)
+        p = counts / counts.sum()
+        total += float(-np.sum(np.log(np.maximum(p[results[mask]], eps))))
+    return total / len(results)
 
 
 @torch.no_grad()
@@ -30,6 +36,7 @@ def evaluate(checkpoint_path: str, val_h5: str, *, device: str = "cpu", sample_n
     tot_ll = tot_acc = tot_top1 = 0.0
     nb = 0
     all_results = []
+    all_buckets = []
     for batch in dl:
         elo_idx = elo_to_bucket(batch["elo_to_move"], n_elo).to(device)
         fl, fm, tl, tm, vlog = model.forward_policy(
@@ -40,11 +47,13 @@ def evaluate(checkpoint_path: str, val_h5: str, *, device: str = "cpu", sample_n
         tot_acc += wdl_accuracy(vlog, result)
         tot_top1 += joint_top1(fl, batch["from_sq"].to(device), fm, tl, batch["to_sq"].to(device), tm)
         all_results.append(batch["result"].cpu().numpy())
+        all_buckets.append(elo_idx.cpu().numpy())
         nb += 1
     nb = max(nb, 1)
     results = np.concatenate(all_results)
+    buckets = np.concatenate(all_buckets)
     return {"wdl_logloss": tot_ll / nb, "wdl_acc": tot_acc / nb,
-            "prior_logloss": prior_logloss_from_results(results),
+            "prior_logloss": prior_logloss_from_results(results, buckets),
             "full_top1": tot_top1 / nb, "n": int(len(results))}
 
 
