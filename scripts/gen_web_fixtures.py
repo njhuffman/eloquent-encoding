@@ -12,7 +12,8 @@ from style_policy.packed_codec import packed_to_board_tensor
 
 DEFAULT_FENS = [chess.STARTING_FEN,
                 "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
-                "8/8/8/4k3/8/4K3/4P3/8 w - - 0 1"]
+                "8/8/8/4k3/8/4K3/4P3/8 w - - 0 1",
+                "rnbqkbnr/pp1ppppp/8/2pP4/8/8/PPP1PPPP/RNBQKBNR w KQkq c6 0 3"]
 
 
 def _bits(u64: int) -> list[bool]:

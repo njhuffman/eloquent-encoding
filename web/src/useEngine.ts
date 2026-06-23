@@ -4,6 +4,7 @@ import { Engine } from "./inference/engine";
 
 export function useEngine() {
   const [engine, setEngine] = useState<Engine | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     const base = import.meta.env.BASE_URL;
     fetch(base + "model_meta.json").then((r) => r.json()).then((meta) =>
@@ -11,7 +12,8 @@ export function useEngine() {
         encode: base + "encode_int8.onnx",
         fromHead: base + "from_head_int8.onnx",
         toHead: base + "to_head_int8.onnx",
-      }, { nEloBuckets: meta.n_elo_buckets }).then(setEngine));
+      }, { nEloBuckets: meta.n_elo_buckets }).then(setEngine))
+      .catch((e) => setError(String(e)));
   }, []);
-  return { engine };
+  return { engine, error };
 }
