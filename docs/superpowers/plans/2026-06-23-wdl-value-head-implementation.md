@@ -283,11 +283,12 @@ git commit -m "feat: PackedBatchWriter (packed training schema + opp_elo/result)
 ### Task 3: Wire builder to write packed rows + result/opp_elo
 
 **Files:**
+- Create: `dataset_generation/move_encode.py` (lift `move_to_from_to`/`promotion_code` — `move_predictor` is archived/unimportable)
 - Modify: `dataset_generation/builder.py`
 - Test: `tests/dataset_generation/test_build_packed_e2e.py`
 
 **Interfaces:**
-- Consumes: `collect_candidate_positions` (6-tuple rows, Task 1), `PackedBatchWriter` (Task 2), `board_to_packed`/`legal_from_u64`/`legal_to_u64` (`style_policy.board_encode`), `move_to_from_to`/`promotion_code` (`move_predictor.encoding`).
+- Consumes: `collect_candidate_positions` (6-tuple rows, Task 1), `PackedBatchWriter` (Task 2), `board_to_packed`/`legal_from_u64`/`legal_to_u64` (`style_policy.board_encode`), `move_to_from_to`/`promotion_code` (new `dataset_generation.move_encode`).
 - Produces: `build_from_recipe(recipe, *, data_dir, output_dir) -> Path` writing a packed h5 (the schema above). Row-count check reads `packed_pre`.
 
 - [ ] **Step 1: Write the failing test (tiny end-to-end build)**
@@ -357,9 +358,29 @@ Expected: FAIL — builder still writes `fen` (no `packed_pre`/`result`); KeyErr
 
 In `dataset_generation/builder.py`:
 
-(a) imports — replace `SampleBatchWriter` import and add codecs:
+(a0) Create `dataset_generation/move_encode.py` (lift from the archived `move_predictor.encoding`; `move_predictor` is NOT importable):
 
 ```python
+"""Chess move -> square indices and promotion code for HDF5 storage."""
+from __future__ import annotations
+import chess
+
+PROMOTION_NONE = 0
+
+
+def move_to_from_to(move: chess.Move) -> tuple[int, int]:
+    return int(move.from_square), int(move.to_square)
+
+
+def promotion_code(move: chess.Move) -> int:
+    """0 if not a promotion; else python-chess piece_type of the promoted piece (2..5)."""
+    return PROMOTION_NONE if move.promotion is None else int(move.promotion)
+```
+
+(a) imports — in `builder.py`, **replace the broken `from move_predictor.encoding import move_to_from_to, promotion_code`** (move_predictor is archived) with the new module, drop the `SampleBatchWriter` import, and add codecs:
+
+```python
+from dataset_generation.move_encode import move_to_from_to, promotion_code
 from dataset_generation.hdf5_io import PackedBatchWriter
 from style_policy.board_encode import board_to_packed, legal_from_u64, legal_to_u64
 ```
