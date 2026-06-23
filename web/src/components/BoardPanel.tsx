@@ -5,10 +5,15 @@ import type { Engine } from "../inference/engine";
 import { topMoves } from "../inference/topMoves";
 import { ThinkingPanel } from "./ThinkingPanel";
 
+const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
+
+type LastMove = { san: string; from: string; to: string };
+
 export function BoardPanel({ engine, elo, temperature }:
   { engine: Engine | null; elo: number; temperature: number }) {
   const [game, setGame] = useState(new Chess());
   const [thinking, setThinking] = useState(false);
+  const [lastMove, setLastMove] = useState<LastMove | null>(null);
   const [topMovesList, setTopMovesList] = useState<{ uci: string; san: string; prob: number }[]>([]);
 
   // Recompute top moves whenever position, elo, or engine changes
@@ -25,10 +30,12 @@ export function BoardPanel({ engine, elo, temperature }:
     if (!engine || g.isGameOver()) return;
     setThinking(true);
     try {
+      await new Promise((r) => setTimeout(r, MOVE_DELAY_MS)); // let the human see their move land first
       const mv = await engine.chooseMove(g, elo, { temperature, greedy: false });
       if (g.isGameOver()) return;
-      g.move(mv);
+      const applied = g.move(mv);
       setGame(new Chess(g.fen()));
+      setLastMove({ san: applied.san, from: applied.from, to: applied.to });
     } finally {
       setThinking(false);
     }
@@ -36,24 +43,35 @@ export function BoardPanel({ engine, elo, temperature }:
 
   const onDrop = useCallback((from: string, to: string) => {
     const g = new Chess(game.fen());
+    let applied;
     try {
-      g.move({ from, to, promotion: "q" }); // chess.js v1 THROWS on an illegal move (doesn't return null)
+      applied = g.move({ from, to, promotion: "q" }); // chess.js v1 THROWS on an illegal move (doesn't return null)
     } catch {
       return false; // reject the drag; react-chessboard snaps the piece back
     }
     setGame(g);
+    setLastMove({ san: applied.san, from: applied.from, to: applied.to });
     void botMove(new Chess(g.fen()));
     return true;
   }, [game, botMove]);
 
-  // Highlight the top move's from/to squares
+  const newGame = useCallback(() => {
+    setGame(new Chess());
+    setLastMove(null);
+    setTopMovesList([]);
+  }, []);
+
+  // Square highlights: blue = model's current top suggestion, yellow = the last move played.
   const customSquareStyles: Record<string, React.CSSProperties> = {};
   if (topMovesList.length > 0) {
     const top = topMovesList[0];
-    const fromSq = top.uci.slice(0, 2);
-    const toSq = top.uci.slice(2, 4);
-    customSquareStyles[fromSq] = { background: "rgba(74,144,217,0.5)" };
-    customSquareStyles[toSq] = { background: "rgba(74,144,217,0.5)" };
+    customSquareStyles[top.uci.slice(0, 2)] = { background: "rgba(74,144,217,0.5)" };
+    customSquareStyles[top.uci.slice(2, 4)] = { background: "rgba(74,144,217,0.5)" };
+  }
+  if (lastMove) {
+    // last-move highlight wins over the suggestion tint on shared squares
+    customSquareStyles[lastMove.from] = { background: "rgba(255,213,79,0.6)" };
+    customSquareStyles[lastMove.to] = { background: "rgba(255,213,79,0.6)" };
   }
 
   return (
@@ -66,7 +84,12 @@ export function BoardPanel({ engine, elo, temperature }:
           customSquareStyles={customSquareStyles}
           boardWidth={480}
         />
-        <button onClick={() => setGame(new Chess())}>New game</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8, minHeight: 24 }}>
+          <button onClick={newGame}>New game</button>
+          <span style={{ color: "#555" }}>
+            {thinking ? "Bot is thinking…" : lastMove ? `Last move: ${lastMove.san}` : ""}
+          </span>
+        </div>
         {game.isGameOver() && <p>Game over: {game.isCheckmate() ? "checkmate" : "draw"}</p>}
       </div>
       <ThinkingPanel moves={topMovesList} />
