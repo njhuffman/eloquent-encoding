@@ -9,6 +9,8 @@ import { ThinkingPanel } from "./ThinkingPanel";
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 
 type LastMove = { san: string; from: string; to: string };
+type MoveProb = { uci: string; san: string; prob: number };
+type BotAnalysis = { list: MoveProb[]; chosenUci: string };
 
 export function BoardPanel({ engine, elo, temperature }:
   { engine: Engine | null; elo: number; temperature: number }) {
@@ -18,7 +20,8 @@ export function BoardPanel({ engine, elo, temperature }:
   const [fen, setFen] = useState(gameRef.current.fen());
   const [thinking, setThinking] = useState(false);
   const [lastMove, setLastMove] = useState<LastMove | null>(null);
-  const [topMovesList, setTopMovesList] = useState<{ uci: string; san: string; prob: number }[]>([]);
+  const [yourMoves, setYourMoves] = useState<MoveProb[]>([]);     // your options for the current position
+  const [botAnalysis, setBotAnalysis] = useState<BotAnalysis | null>(null); // bot's choice at its last move
   const [copied, setCopied] = useState(false);
 
   // Push gameRef state into render state (fen + last-move label).
@@ -30,14 +33,37 @@ export function BoardPanel({ engine, elo, temperature }:
     setLastMove(last ? { san: last.san, from: last.from, to: last.to } : null);
   }, []);
 
-  // Recompute top moves whenever the position, elo, or engine changes.
+  // Recompute BOTH analyses whenever the position, elo, or engine changes — so they
+  // persist through the bot's reply and refresh correctly after an undo.
+  //  - "Your move": the model's options for the current (human, White) position.
+  //  - "Bot's last move": the model's options at the position before the bot's most
+  //    recent Black move, with the move it actually played marked.
   useEffect(() => {
-    const board = new Chess(fen);
-    if (!engine || board.isGameOver()) { setTopMovesList([]); return; }
+    if (!engine) { setYourMoves([]); setBotAnalysis(null); return; }
+    const g = gameRef.current;
     let cancelled = false;
-    topMoves(engine, board, elo, 5).then((moves) => {
-      if (!cancelled) setTopMovesList(moves);
-    }).catch(() => {});
+    (async () => {
+      // Your move (only meaningful when it's White/human to move and the game is live)
+      if (!g.isGameOver() && g.turn() === "w") {
+        const ym = await topMoves(engine, new Chess(g.fen()), elo, 5);
+        if (!cancelled) setYourMoves(ym);
+      } else if (!cancelled) {
+        setYourMoves([]);
+      }
+      // Bot's last move: reconstruct the position just before the last Black move
+      const verbose = g.history({ verbose: true });
+      let lastBlackIdx = -1;
+      for (let i = verbose.length - 1; i >= 0; i--) { if (verbose[i].color === "b") { lastBlackIdx = i; break; } }
+      if (lastBlackIdx >= 0) {
+        const pre = new Chess();
+        for (let i = 0; i < lastBlackIdx; i++) pre.move(verbose[i].san);
+        const list = await topMoves(engine, pre, elo, 5);
+        const mv = verbose[lastBlackIdx];
+        if (!cancelled) setBotAnalysis({ list, chosenUci: mv.from + mv.to });
+      } else if (!cancelled) {
+        setBotAnalysis(null);
+      }
+    })().catch(() => {});
     return () => { cancelled = true; };
   }, [engine, fen, elo]);
 
@@ -79,7 +105,6 @@ export function BoardPanel({ engine, elo, temperature }:
     if (thinking) return;
     gameRef.current = new Chess();
     setLastMove(null);
-    setTopMovesList([]);
     setFen(gameRef.current.fen());
   }, [thinking]);
 
@@ -97,10 +122,10 @@ export function BoardPanel({ engine, elo, temperature }:
   const view = gameRef.current; // in sync with `fen` (every mutation calls sync())
   const hasMoves = view.history().length > 0;
 
-  // Square highlights: blue = model's current top suggestion, yellow = the last move played.
+  // Square highlights: blue = your current top suggestion, yellow = the last move played.
   const customSquareStyles: Record<string, React.CSSProperties> = {};
-  if (topMovesList.length > 0) {
-    const top = topMovesList[0];
+  if (yourMoves.length > 0) {
+    const top = yourMoves[0];
     customSquareStyles[top.uci.slice(0, 2)] = { background: "rgba(74,144,217,0.5)" };
     customSquareStyles[top.uci.slice(2, 4)] = { background: "rgba(74,144,217,0.5)" };
   }
@@ -129,7 +154,15 @@ export function BoardPanel({ engine, elo, temperature }:
         </div>
         {view.isGameOver() && <p>Game over: {view.isCheckmate() ? "checkmate" : "draw"}</p>}
       </div>
-      <ThinkingPanel moves={topMovesList} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        <ThinkingPanel
+          title="Bot's last move"
+          moves={botAnalysis?.list ?? []}
+          highlightUci={botAnalysis?.chosenUci}
+          emptyHint="No bot move yet"
+        />
+        <ThinkingPanel title="Your move" moves={yourMoves} emptyHint="—" />
+      </div>
     </div>
   );
 }

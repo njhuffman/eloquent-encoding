@@ -6,7 +6,7 @@ import { Controls } from "./components/Controls";
 export function App() {
   const { engine, error } = useEngine();
   const [elo, setElo] = useState(1500);
-  const [temperature, setTemperature] = useState(1.0);
+  const [temperature, setTemperature] = useState(0.1);
   return (
     <div style={{ maxWidth: 760, margin: "0 auto", padding: 16 }}>
       <h1>Eloquent Bot</h1>
