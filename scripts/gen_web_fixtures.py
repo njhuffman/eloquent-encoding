@@ -22,7 +22,7 @@ def _bits(u64: int) -> list[bool]:
 
 def build_cases(checkpoint_path: str, fens: list[str], elo: int) -> dict:
     ck = torch.load(checkpoint_path, map_location="cpu")
-    policy = BasePolicy.from_config(ck["architecture"]); policy.load_state_dict(ck["model"]); policy.eval()
+    policy = BasePolicy.from_config(ck["architecture"]); policy.load_state_dict(ck["model"], strict=False); policy.eval()  # old policy-only checkpoints predate the value head
     n = int(ck["architecture"]["n_elo_buckets"])
     bucket = int(elo_to_bucket(torch.tensor([elo]), n).item())
     cases = []

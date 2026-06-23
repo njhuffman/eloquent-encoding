@@ -33,7 +33,7 @@ class PolicyBot(Player):
                  temperature: float = 1.0, seed: int | None = None):
         ck = torch.load(checkpoint_path, map_location=device)
         self.model = BasePolicy.from_config(ck["architecture"]).to(device)
-        self.model.load_state_dict(ck["model"])
+        self.model.load_state_dict(ck["model"], strict=False)  # old policy-only checkpoints predate the value head
         self.model.eval()
         self.device = device
         self.n_elo = int(ck["architecture"]["n_elo_buckets"])

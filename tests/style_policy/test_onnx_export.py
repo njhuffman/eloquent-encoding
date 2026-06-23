@@ -40,7 +40,7 @@ FENS = [chess.STARTING_FEN,
 
 def test_fp32_onnx_parity(tmp_path):
     ck = torch.load(CKPT, map_location="cpu")
-    policy = BasePolicy.from_config(ck["architecture"]); policy.load_state_dict(ck["model"]); policy.eval()
+    policy = BasePolicy.from_config(ck["architecture"]); policy.load_state_dict(ck["model"], strict=False); policy.eval()  # old policy-only checkpoints predate the value head
     export_fp32(CKPT, tmp_path)
     enc = ort.InferenceSession(str(tmp_path / "encode.onnx"))
     fh = ort.InferenceSession(str(tmp_path / "from_head.onnx"))
@@ -64,7 +64,7 @@ def test_fp32_onnx_parity(tmp_path):
 def test_int8_parity_top1(tmp_path):
     from scripts.export_onnx import export_fp32, quantize_and_check, board_tensor_for_fen
     ck = torch.load(CKPT, map_location="cpu")
-    policy = BasePolicy.from_config(ck["architecture"]); policy.load_state_dict(ck["model"]); policy.eval()
+    policy = BasePolicy.from_config(ck["architecture"]); policy.load_state_dict(ck["model"], strict=False); policy.eval()  # old policy-only checkpoints predate the value head
     export_fp32(CKPT, tmp_path / "fp32")
     quantize_and_check(tmp_path / "fp32", tmp_path / "int8")
     enc = ort.InferenceSession(str(tmp_path / "int8" / "encode_int8.onnx"))

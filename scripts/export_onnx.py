@@ -23,7 +23,7 @@ def export_fp32(checkpoint_path: str, out_dir) -> dict:
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     ck = torch.load(checkpoint_path, map_location="cpu")
     policy = BasePolicy.from_config(ck["architecture"])
-    policy.load_state_dict(ck["model"])
+    policy.load_state_dict(ck["model"], strict=False)  # old policy-only checkpoints predate the value head
     enc, fh, th = build_export_modules(policy)
     d = int(ck["architecture"]["d_model"])
 
