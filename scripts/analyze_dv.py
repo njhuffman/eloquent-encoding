@@ -34,6 +34,7 @@ def main() -> int:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--n", type=int, default=4000)
     ap.add_argument("--plot", default=None, help="write a ΔV histogram PNG (disagreement set) to this path")
+    ap.add_argument("--scatter", default=None, help="write a ΔV_human vs ΔV_model scatter PNG (disagreement set) to this path")
     args = ap.parse_args()
     dev = args.device
     ck = torch.load(args.checkpoint, map_location=dev)
@@ -116,6 +117,28 @@ def main() -> int:
         ax[1].set_xlabel("ΔV = change in mover's expected score after the move  (<0 = worse, the left tail is blunders)")
         fig.tight_layout(); fig.savefig(args.plot, dpi=120)
         print("wrote", args.plot)
+
+    if args.scatter:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        h, mo = dv_h[dis], dv_m[dis]
+        lim = 0.5
+        fig, ax = plt.subplots(figsize=(7, 7))
+        ax.scatter(h, mo, s=7, alpha=0.18, color="#34495e", edgecolors="none")
+        ax.plot([-lim, lim], [-lim, lim], color="gray", ls="--", lw=1, label="model = human (y=x)")
+        ax.axhline(0, color="k", lw=0.6, ls=":"); ax.axvline(0, color="k", lw=0.6, ls=":")
+        ax.axvspan(-lim, -0.1, color="red", alpha=0.05)    # human blundered (ΔV_human < -0.1)
+        ax.axhspan(-lim, -0.1, color="orange", alpha=0.06)  # model blundered (ΔV_model < -0.1)
+        above = float((mo > h).mean()) * 100
+        ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim); ax.set_aspect("equal")
+        ax.set_xlabel("ΔV of the human's move  (<0 = worse)")
+        ax.set_ylabel("ΔV of the model's move  (<0 = worse)")
+        ax.set_title(f"Disagreements (n={int(dis.sum())}): model above the diagonal {above:.0f}% of the time\n"
+                     f"red strip = human blundered; orange strip = model blundered")
+        ax.legend(loc="upper left", fontsize=9)
+        fig.tight_layout(); fig.savefig(args.scatter, dpi=120)
+        print("wrote", args.scatter)
     return 0
 
 
