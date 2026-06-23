@@ -11,10 +11,14 @@ export function BoardPanel({ engine, elo, temperature }:
   const botMove = useCallback(async (g: Chess) => {
     if (!engine || g.isGameOver()) return;
     setThinking(true);
-    const mv = await engine.chooseMove(g, elo, { temperature, greedy: false });
-    g.move(mv);
-    setGame(new Chess(g.fen()));
-    setThinking(false);
+    try {
+      const mv = await engine.chooseMove(g, elo, { temperature, greedy: false });
+      if (g.isGameOver()) return;
+      g.move(mv);
+      setGame(new Chess(g.fen()));
+    } finally {
+      setThinking(false);
+    }
   }, [engine, elo, temperature]);
 
   const onDrop = useCallback((from: string, to: string) => {
