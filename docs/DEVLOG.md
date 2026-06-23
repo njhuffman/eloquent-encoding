@@ -226,3 +226,16 @@ PolicyBot consults the book (off by default; `opening_book=` + `book_threshold=`
    brainstorm→spec→plan when picked up (not yet designed).
 3. **Deferred experiments:** opp-elo conditioning for the value head; phase-sliced WDL; expected-score
    target; checkpoint Elo curve + blunder-rate (incl. on base_4M→64M); move-match-by-rating-band.
+
+## 2026-06-23 — WDL value head: 16M joint training + gate (PASS)
+
+Joint policy+WDL training on the uncompressed 16M set (value_loss_weight=1.0, bf16, 1 epoch /
+62.5k steps). Gate eval on wdl_validation_1M (10k):
+- WDL log-loss 0.703 vs per-elo-bucket prior 0.829 → beats prior (criterion 1 PASS). WDL acc 0.65.
+- Policy full-move top-1: wdl_16M 0.4243 vs base_16M 0.425 on the SAME val set → −0.07%, no
+  regression (criterion 2 PASS). (The 43.6%→42.5% apparent drop was a val-set difference, not a
+  regression — base_16M scores 42.5% on the new val too.)
+Conclusion: the joint value head learns real position-dependent value and is essentially free to
+the policy. Aggregate WDL log-loss looks modest only because opening-heavy positions are
+inherently ~0.5; phase-sliced eval + the ΔV analyses (B1/B2) are next before any value-weighted
+loss or the 64M scale-up.
