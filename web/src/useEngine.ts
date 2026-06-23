@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import * as ort from "onnxruntime-web";
 import { Engine } from "./inference/engine";
+import { OpeningBookSet } from "./inference/openingBook";
 
 export function useEngine() {
   const [engine, setEngine] = useState<Engine | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [books] = useState(() => new OpeningBookSet(import.meta.env.BASE_URL));
   useEffect(() => {
     const base = import.meta.env.BASE_URL;
     fetch(base + "model_meta.json")
@@ -17,5 +19,5 @@ export function useEngine() {
       .then(setEngine)
       .catch((e) => setError(String(e)));
   }, []);
-  return { engine, error };
+  return { engine, error, books };
 }

@@ -4,7 +4,7 @@ import { BoardPanel } from "./components/BoardPanel";
 import { Controls } from "./components/Controls";
 
 export function App() {
-  const { engine, error } = useEngine();
+  const { engine, error, books } = useEngine();
   const [elo, setElo] = useState(1500);
   const [temperature, setTemperature] = useState(0.1);
   return (
@@ -13,7 +13,7 @@ export function App() {
       {error && <p style={{color:"crimson"}}>Failed to load model: {error}</p>}
       {!engine && !error && <p>Loading model…</p>}
       <Controls elo={elo} setElo={setElo} temperature={temperature} setTemperature={setTemperature} />
-      <BoardPanel engine={engine} elo={elo} temperature={temperature} />
+      <BoardPanel engine={engine} elo={elo} temperature={temperature} books={books} />
     </div>
   );
 }

@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Chessboard } from "react-chessboard";
 import { Chess } from "chess.js";
 import type { Engine } from "../inference/engine";
+import type { OpeningBookSet } from "../inference/openingBook";
 import { topMoves } from "../inference/topMoves";
+import { bookOrModelMove } from "../inference/bookMove";
 import { undoToHumanTurn } from "../undo";
 import { ThinkingPanel } from "./ThinkingPanel";
 
@@ -12,8 +14,8 @@ type LastMove = { san: string; from: string; to: string };
 type MoveProb = { uci: string; san: string; prob: number };
 type BotAnalysis = { list: MoveProb[]; chosenUci: string };
 
-export function BoardPanel({ engine, elo, temperature }:
-  { engine: Engine | null; elo: number; temperature: number }) {
+export function BoardPanel({ engine, elo, temperature, books }:
+  { engine: Engine | null; elo: number; temperature: number; books: OpeningBookSet | null }) {
   // gameRef is the authoritative game (keeps full move history for undo + PGN).
   // `fen` mirrors it in state to drive re-renders.
   const gameRef = useRef(new Chess());
@@ -73,14 +75,14 @@ export function BoardPanel({ engine, elo, temperature }:
     setThinking(true);
     try {
       await new Promise((r) => setTimeout(r, MOVE_DELAY_MS)); // let the human see their move land first
-      const mv = await engine.chooseMove(new Chess(g.fen()), elo, { temperature, greedy: false });
+      const mv = await bookOrModelMove(books, engine, new Chess(g.fen()), elo, { temperature, greedy: false });
       if (g.isGameOver()) return;
       g.move(mv);
       sync();
     } finally {
       setThinking(false);
     }
-  }, [engine, elo, temperature, sync]);
+  }, [books, engine, elo, temperature, sync]);
 
   const onDrop = useCallback((from: string, to: string) => {
     if (thinking) return false;
