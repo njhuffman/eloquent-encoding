@@ -193,3 +193,19 @@ val.**
 - **Held-out-elo run** (the harder case; measure cost vs this 43.6% elo-known baseline).
 - **Saturation probe** (4M vs 16M final val) to settle data-vs-capacity.
 - **Phase 2: style buckets via EM** (the actual differentiator over Maia).
+
+## 2026-06-23 — Opening book (per-elo-band, PGN-derived)
+
+Built per-elo-band statistical opening books from `lichess_db_standard_rated_2025-01_tc_600_0.pgn.zst`
+(`python -m scripts.build_opening_book --per-band-target 100000`), single-threaded/niced alongside
+WDL training. 10 bands (1000–1900), 100k games each, first 24 plies, position-keyed by EPD
+(transposition-merged), pruned to ≥0.1% support. Output: `/mnt/eloquence_bulk/databases/opening_book/band_*.json`
+(~180K each, ~765–930 positions/band).
+
+Sanity (start-position move %, elo-dependent as expected):
+- 1200: e4 69% / d4 21% / Nf3 2%; after 1.e4 → e5 61%, d5 10%, c5 8%.
+- 1800: e4 63% / d4 26% / c4 3%; after 1.e4 → e5 41%, c5 20% (Sicilian), e6 10% (French).
+
+PolicyBot consults the book (off by default; `opening_book=` + `book_threshold=`, default 1%), samples
+∝ human frequency while support ≥ threshold, then hands off to the model. Books live in the data dir
+(not committed). Web-bot integration (shipping book JSON as a static asset) is future work.
