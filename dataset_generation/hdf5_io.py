@@ -25,11 +25,13 @@ class PackedBatchWriter:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._f = h5py.File(path, "w")
         self._n = 0
+        # Uncompressed: training shuffles rows, so random access must not pay per-chunk
+        # gzip decompression (gzip made the dataloader CPU-bound and starved the GPU).
+        # Matches the original j3 packed datasets, which are uncompressed.
         self._f.create_dataset("packed_pre", shape=(0, PACKED_LEN), maxshape=(None, PACKED_LEN),
-                               dtype=np.uint8, chunks=(CHUNK, PACKED_LEN), compression="gzip", compression_opts=4)
+                               dtype=np.uint8, chunks=(CHUNK, PACKED_LEN))
         for name, dt in self._SCALAR:
-            self._f.create_dataset(name, shape=(0,), maxshape=(None,), dtype=dt,
-                                   chunks=(CHUNK,), compression="gzip", compression_opts=4)
+            self._f.create_dataset(name, shape=(0,), maxshape=(None,), dtype=dt, chunks=(CHUNK,))
         self._buf = {c: [] for c in self.COLUMNS}
 
     def __enter__(self) -> "PackedBatchWriter":
