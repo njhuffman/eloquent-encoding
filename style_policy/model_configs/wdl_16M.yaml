@@ -1,0 +1,39 @@
+name: wdl_16M
+checkpoint_dir: style_policy_checkpoints/wdl_16M
+train_h5: /mnt/eloquence_bulk/databases/wdl_training_16M.h5
+val_h5: /mnt/eloquence_bulk/databases/wdl_validation_1M.h5
+val_sample: {n: 10000, seed: 42}
+wandb:
+  project: style_policy
+  mode: online   # online | offline | disabled (or set WANDB_MODE env to override)
+architecture:
+  d_model: 256
+  n_layers: 8
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  head_hidden: 512
+  elo_dim: 32
+  n_elo_buckets: 40
+defaults:
+  batch_size: 256             # ~1.36GB VRAM (33% of 4GB). Same effective batch as old 128x2;
+                              # chosen for simpler single-step semantics, NOT speed: the GPU was
+                              # already ~98% saturated at bs128, so throughput is ~unchanged (~2.8h/epoch).
+  dataloader_num_workers: 4
+  use_amp: true
+  amp_dtype: bf16        # bf16 avoids fp16 forward-overflow NaN (Ada GPU supports it; no GradScaler needed)
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 50
+  val_interval: 1000          # ~every few minutes; fewer total steps now at bs256
+  checkpoint_interval: 1000   # resumable checkpoint cadence (resume with: --resume)
+  gradient_accumulation_steps: 1   # effective batch 256 in one step (was 128x2)
+  lr_schedule: cosine     # linear warmup -> cosine decay to lr_min_frac*lr (better than flat LR)
+  warmup_steps: 1000
+  lr_min_frac: 0.0
+  seed: 0
+  value_loss_weight: 1.0
+stages:
+  - sample: {n: 16000000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0002}
+    label_smoothing: 0.1

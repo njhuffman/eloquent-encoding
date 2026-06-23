@@ -1,0 +1,33 @@
+name: tiny_smoke_wdl
+checkpoint_dir: style_policy_checkpoints/tiny_smoke_wdl
+train_h5: /mnt/eloquence_bulk/databases/wdl_training_16M.h5
+val_h5: /mnt/eloquence_bulk/databases/wdl_validation_1M.h5
+val_sample: {n: 256, seed: 42}
+architecture:
+  d_model: 64
+  n_layers: 2
+  nhead: 4
+  dim_feedforward: 128
+  dropout: 0.0
+  head_hidden: 64
+  elo_dim: 8
+  n_elo_buckets: 40
+defaults:
+  batch_size: 64
+  dataloader_num_workers: 0
+  use_amp: true
+  amp_dtype: bf16        # bf16 avoids fp16 forward-overflow NaN (Ada GPU supports it; no GradScaler needed)
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 20
+  val_interval: 10          # steps between validation passes (0 = only at end)
+  checkpoint_interval: 15   # steps between resumable checkpoint saves (0 = only at end)
+  lr_schedule: cosine
+  warmup_steps: 5
+  lr_min_frac: 0.0
+  seed: 0
+  value_loss_weight: 1.0
+stages:
+  - sample: {n: 2000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0003}
+    label_smoothing: 0.0

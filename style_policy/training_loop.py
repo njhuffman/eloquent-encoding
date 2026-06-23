@@ -21,7 +21,7 @@ import torch
 from torch.utils.data import DataLoader
 from style_policy.model import BasePolicy
 from style_policy.dataset import PackedMoveDataset
-from style_policy.loss import masked_square_ce, top1_legal, joint_top1
+from style_policy.loss import masked_square_ce, top1_legal, joint_top1, wdl_ce, wdl_accuracy
 from style_policy.model_spec import elo_to_bucket
 
 _AMP_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16}
@@ -54,22 +54,26 @@ def _init_wandb(spec: dict, stage_idx: int, stage: dict, device: str):
     )
 
 
-def _step_loss(model, batch, device, n_elo, label_smoothing):
+def _step_loss(model, batch, device, n_elo, label_smoothing, value_loss_weight=1.0):
     packed = batch["packed_pre"].to(device)
     elo_idx = elo_to_bucket(batch["elo_to_move"], n_elo).to(device)
-    from_logits, from_mask, to_logits, to_mask = model.forward_policy(
+    from_logits, from_mask, to_logits, to_mask, value_logits = model.forward_policy(
         packed, batch["from_sq"].to(device),
         batch["from_legal_u64"].to(device), batch["to_legal_u64"].to(device),
         elo_idx=elo_idx)
     from_sq = batch["from_sq"].to(device)
     to_sq = batch["to_sq"].to(device)
+    result = batch["result"].to(device)
     fl = masked_square_ce(from_logits, from_sq, from_mask, label_smoothing=label_smoothing)
     tl = masked_square_ce(to_logits, to_sq, to_mask, label_smoothing=label_smoothing)
-    metrics = {"from_ce": fl.item(), "to_ce": tl.item(),
+    vl = wdl_ce(value_logits, result)
+    total = fl + tl + value_loss_weight * vl
+    metrics = {"from_ce": fl.item(), "to_ce": tl.item(), "wdl_ce": vl.item(),
                "from_top1": top1_legal(from_logits, from_sq, from_mask),
                "to_top1": top1_legal(to_logits, to_sq, to_mask),
-               "full_top1": joint_top1(from_logits, from_sq, from_mask, to_logits, to_sq, to_mask)}
-    return fl + tl, metrics
+               "full_top1": joint_top1(from_logits, from_sq, from_mask, to_logits, to_sq, to_mask),
+               "wdl_acc": wdl_accuracy(value_logits, result)}
+    return total, metrics
 
 
 def _make_loader(h5: str, stage: dict, sample_n: int, seed: int, *, shuffle: bool):
@@ -80,15 +84,16 @@ def _make_loader(h5: str, stage: dict, sample_n: int, seed: int, *, shuffle: boo
 
 
 @torch.no_grad()
-def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype) -> dict:
+def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, value_loss_weight=1.0) -> dict:
     """Mean unsmoothed val metrics over a fixed subset. Restores train mode on exit."""
     was_training = model.training
     model.eval()
-    tot = {"from_ce": 0.0, "to_ce": 0.0, "from_top1": 0.0, "to_top1": 0.0, "full_top1": 0.0}
+    tot = {"from_ce": 0.0, "to_ce": 0.0, "from_top1": 0.0, "to_top1": 0.0,
+           "full_top1": 0.0, "wdl_ce": 0.0, "wdl_acc": 0.0}
     nb = 0
     for batch in val_dl:
         with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
-            _, m = _step_loss(model, batch, device, n_elo, 0.0)
+            _, m = _step_loss(model, batch, device, n_elo, 0.0, value_loss_weight)
         for k in tot:
             tot[k] += m[k]
         nb += 1
@@ -169,7 +174,7 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
             if global_step >= total_steps:
                 break
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
-                loss, m = _step_loss(model, batch, device, n_elo, stage.get("label_smoothing", 0.0))
+                loss, m = _step_loss(model, batch, device, n_elo, stage.get("label_smoothing", 0.0), stage.get("value_loss_weight", 1.0))
             # Fail fast: a non-finite loss means the run has diverged. Don't silently freeze
             # for thousands of steps (the fp16-overflow failure mode). Save a diagnostic and abort.
             if not torch.isfinite(loss):
@@ -195,11 +200,12 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
                       f"full_top1={m['full_top1']*100:.1f}%")
                 if run is not None:
                     run.log({"train/loss": loss.item(), "train/from_ce": m["from_ce"], "train/to_ce": m["to_ce"],
+                             "train/wdl_ce": m["wdl_ce"], "train/wdl_acc": m["wdl_acc"],
                              "train/from_top1": m["from_top1"], "train/to_top1": m["to_top1"],
                              "train/full_top1": m["full_top1"], "lr": opt.param_groups[0]["lr"]}, step=global_step)
 
             if val_dl is not None and val_interval > 0 and global_step > 0 and global_step % val_interval == 0:
-                vm = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
+                vm = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, stage.get("value_loss_weight", 1.0))
                 vloss = vm["val/from_ce"] + vm["val/to_ce"]
                 print(f"  [val step={global_step}] from_ce={vm['val/from_ce']:.4f} to_ce={vm['val/to_ce']:.4f} "
                       f"from_top1={vm['val/from_top1']*100:.1f}% to_top1={vm['val/to_top1']*100:.1f}% "
@@ -226,7 +232,7 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
             sched.step()
 
     if val_dl is not None:
-        final_val = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
+        final_val = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, stage.get("value_loss_weight", 1.0))
         vloss = final_val["val/from_ce"] + final_val["val/to_ce"]
         print(f"[final val] from_ce={final_val['val/from_ce']:.4f} to_ce={final_val['val/to_ce']:.4f} "
               f"from_top1={final_val['val/from_top1']*100:.1f}% to_top1={final_val['val/to_top1']*100:.1f}% "
