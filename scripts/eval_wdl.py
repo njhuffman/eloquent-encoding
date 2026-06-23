@@ -39,7 +39,7 @@ def evaluate(checkpoint_path: str, val_h5: str, *, device: str = "cpu", sample_n
         tot_ll += torch.nn.functional.cross_entropy(vlog, result.long()).item()
         tot_acc += wdl_accuracy(vlog, result)
         tot_top1 += joint_top1(fl, batch["from_sq"].to(device), fm, tl, batch["to_sq"].to(device), tm)
-        all_results.append(batch["result"].numpy())
+        all_results.append(batch["result"].cpu().numpy())
         nb += 1
     nb = max(nb, 1)
     results = np.concatenate(all_results)
