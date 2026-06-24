@@ -1,14 +1,28 @@
 import React from "react";
 
-export function Controls({ elo, setElo, temperature, setTemperature, playerColor, setPlayerColor }: {
-  elo: number; setElo: (n: number) => void; temperature: number; setTemperature: (n: number) => void;
+export function Controls({
+  botElo, setBotElo, botEloLocked, analysisElo, setAnalysisElo,
+  showAnalysis, setShowAnalysis, temperature, setTemperature, playerColor, setPlayerColor,
+}: {
+  botElo: number; setBotElo: (n: number) => void; botEloLocked: boolean;
+  analysisElo: number; setAnalysisElo: (n: number) => void;
+  showAnalysis: boolean; setShowAnalysis: (b: boolean) => void;
+  temperature: number; setTemperature: (n: number) => void;
   playerColor: "w" | "b"; setPlayerColor: (c: "w" | "b") => void;
 }) {
   return (
     <div style={{ display: "flex", gap: 24, margin: "12px 0", alignItems: "center", flexWrap: "wrap" }}>
-      <label>Elo: {elo}
-        <input type="range" min={600} max={2400} step={100} value={elo}
-               onChange={(e) => setElo(Number(e.target.value))} />
+      <label>Bot elo: {botElo}{botEloLocked ? " 🔒" : ""}
+        <input type="range" min={600} max={2400} step={100} value={botElo} disabled={botEloLocked}
+               onChange={(e) => setBotElo(Number(e.target.value))} />
+      </label>
+      <label style={{ opacity: showAnalysis ? 1 : 0.5 }}>Analysis elo: {analysisElo}
+        <input type="range" min={600} max={2400} step={100} value={analysisElo} disabled={!showAnalysis}
+               onChange={(e) => setAnalysisElo(Number(e.target.value))} />
+      </label>
+      <label>
+        <input type="checkbox" checked={showAnalysis} onChange={(e) => setShowAnalysis(e.target.checked)} />
+        {" "}Show analysis
       </label>
       <label>Temperature: {temperature.toFixed(1)}
         <input type="range" min={0.1} max={2.0} step={0.1} value={temperature}

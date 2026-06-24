@@ -1,176 +1,117 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Chessboard } from "react-chessboard";
-import { Chess } from "chess.js";
-import type { Engine } from "../inference/engine";
-import type { OpeningBookSet } from "../inference/openingBook";
 import { topMoves } from "../inference/topMoves";
 import { bookOrModelMove } from "../inference/bookMove";
-import { undoToHumanTurn } from "../undo";
 import { ThinkingPanel } from "./ThinkingPanel";
 import { botColorOf, boardOrientationOf, botShouldOpen } from "../playerColor";
 import { WDLBar, type WDL } from "./WDLBar";
 import { resolveClick } from "../clickMove";
+import { boardAtPly, truncateAndPlay, shouldBotReply } from "../gameNav";
+import type { Engine } from "../inference/engine";
+import type { OpeningBookSet } from "../inference/openingBook";
 
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 
-type LastMove = { san: string; from: string; to: string };
 type MoveProb = { uci: string; san: string; prob: number };
-type BotAnalysis = { list: MoveProb[]; chosenUci: string };
 
-export function BoardPanel({ engine, elo, temperature, books, playerColor }:
-  { engine: Engine | null; elo: number; temperature: number; books: OpeningBookSet | null; playerColor: "w" | "b" }) {
+export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperature, books, playerColor, onGameStartedChange }:
+  { engine: Engine | null; botElo: number; analysisElo: number; showAnalysis: boolean;
+    temperature: number; books: OpeningBookSet | null; playerColor: "w" | "b";
+    onGameStartedChange: (started: boolean) => void }) {
   const botColor = botColorOf(playerColor);
 
-  // gameRef is the authoritative game (keeps full move history for undo + PGN).
-  // `fen` mirrors it in state to drive re-renders.
-  const gameRef = useRef(new Chess());
-  const [fen, setFen] = useState(gameRef.current.fen());
+  // The current line as an authoritative SAN list; `viewPly` = how many plies are shown (length = live tip).
+  const [history, setHistory] = useState<string[]>([]);
+  const historyRef = useRef(history);
+  historyRef.current = history; // keep the ref synced so the async bot reply reads the latest line
+  const [viewPly, setViewPly] = useState(0);
   const [thinking, setThinking] = useState(false);
-  const [lastMove, setLastMove] = useState<LastMove | null>(null);
-  const [yourMoves, setYourMoves] = useState<MoveProb[]>([]);     // your options for the current position
-  const [botAnalysis, setBotAnalysis] = useState<BotAnalysis | null>(null); // bot's choice at its last move
-  const [copied, setCopied] = useState(false);
+  const [analysis, setAnalysis] = useState<MoveProb[]>([]);
   const [wdl, setWdl] = useState<WDL | null>(null);
-  // The side-to-move the current `wdl` was computed for. Kept as a matched pair with `wdl`
-  // so the bar never momentarily maps a stale value to the new turn's perspective.
   const [wdlStm, setWdlStm] = useState<"w" | "b">("w");
-  const [selected, setSelected] = useState<string | null>(null); // tap-to-move: the picked from-square
+  const [selected, setSelected] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
-  // Push gameRef state into render state (fen + last-move label).
-  const sync = useCallback(() => {
-    const g = gameRef.current;
-    setFen(g.fen());
-    const h = g.history({ verbose: true });
-    const last = h[h.length - 1];
-    setLastMove(last ? { san: last.san, from: last.from, to: last.to } : null);
+  const board = boardAtPly(history, viewPly); // the displayed position
+  const tip = history.length;
+  const atTip = viewPly === tip;
+
+  // Commit a new line: set the ref synchronously (for async reads) and jump the view to its tip.
+  const commit = useCallback((next: string[]) => {
+    historyRef.current = next;
+    setHistory(next);
+    setViewPly(next.length);
   }, []);
 
-  // Recompute BOTH analyses whenever the position, elo, or engine changes — so they
-  // persist through the bot's reply and refresh correctly after an undo.
-  //  - "Your move": the model's options for the current (human, White) position.
-  //  - "Bot's last move": the model's options at the position before the bot's most
-  //    recent Black move, with the move it actually played marked.
-  useEffect(() => {
-    if (!engine) { setYourMoves([]); setBotAnalysis(null); return; }
-    const g = gameRef.current;
-    let cancelled = false;
-    (async () => {
-      // Your move (only meaningful when it's the human's turn and the game is live)
-      if (!g.isGameOver() && g.turn() === playerColor) {
-        const ym = await topMoves(engine, new Chess(g.fen()), elo, 5);
-        if (!cancelled) setYourMoves(ym);
-      } else if (!cancelled) {
-        setYourMoves([]);
-      }
-      // Bot's last move: reconstruct the position just before the bot's last move
-      const verbose = g.history({ verbose: true });
-      let lastBotIdx = -1;
-      for (let i = verbose.length - 1; i >= 0; i--) { if (verbose[i].color === botColor) { lastBotIdx = i; break; } }
-      if (lastBotIdx >= 0) {
-        const pre = new Chess();
-        for (let i = 0; i < lastBotIdx; i++) pre.move(verbose[i].san);
-        const list = await topMoves(engine, pre, elo, 5);
-        const mv = verbose[lastBotIdx];
-        if (!cancelled) setBotAnalysis({ list, chosenUci: mv.from + mv.to });
-      } else if (!cancelled) {
-        setBotAnalysis(null);
-      }
-      // WDL bar (side-to-move perspective; conditioned on the elo slider). Capture the
-      // side-to-move now and commit it together with the value, so the bar's perspective
-      // always matches the value it's displaying (no stale-perspective flash on a new move).
-      const stm = g.turn();
-      try {
-        const v = await engine.value(new Chess(g.fen()), elo);
-        if (!cancelled) { setWdl(v); setWdlStm(stm); }
-      } catch { if (!cancelled) setWdl(null); }
-    })().catch(() => {});
-    return () => { cancelled = true; };
-  }, [engine, fen, elo, playerColor, botColor]);
-
-  // Any position change (move, bot reply, undo, new game, color switch) clears the tap selection.
-  useEffect(() => { setSelected(null); }, [fen]);
-
-  // Picking a color starts a fresh game.
-  useEffect(() => {
-    gameRef.current = new Chess();
-    setLastMove(null);
-    setFen(gameRef.current.fen());
-  }, [playerColor]);
-
-  // If the human is Black, the bot (White) opens once the board is fresh + engine is ready.
-  useEffect(() => {
-    if (engine && botShouldOpen(playerColor, gameRef.current.history().length) &&
-        !gameRef.current.isGameOver()) {
-      void botMoveRef.current();
-    }
-  }, [engine, playerColor]);
-
   const botMove = useCallback(async () => {
-    const g = gameRef.current;
-    if (!engine || g.isGameOver()) return;
+    if (!engine) return;
+    if (boardAtPly(historyRef.current, historyRef.current.length).isGameOver()) return;
     setThinking(true);
     try {
       await new Promise((r) => setTimeout(r, MOVE_DELAY_MS)); // let the human see their move land first
-      const mv = await bookOrModelMove(books, engine, new Chess(g.fen()), elo, { temperature, greedy: false });
-      if (g.isGameOver()) return;
-      g.move(mv);
-      sync();
+      const cur = boardAtPly(historyRef.current, historyRef.current.length);
+      if (cur.isGameOver()) return;
+      const mv = await bookOrModelMove(books, engine, cur, botElo, { temperature, greedy: false });
+      const next = truncateAndPlay(historyRef.current, historyRef.current.length, mv);
+      if (next) commit(next);
     } finally {
       setThinking(false);
     }
-  }, [books, engine, elo, temperature, sync]);
+  }, [books, engine, botElo, temperature, commit]);
 
   const botMoveRef = useRef(botMove);
   botMoveRef.current = botMove;
 
-  // Apply a human move (shared by drag and tap-to-move). Returns false if it was illegal
-  // or not the human's turn, so the caller can reject the interaction.
-  const tryHumanMove = useCallback((from: string, to: string): boolean => {
-    const g = gameRef.current;
-    if (thinking || g.isGameOver() || g.turn() !== playerColor) return false;
-    try {
-      g.move({ from, to, promotion: "q" }); // chess.js v1 THROWS on an illegal move (doesn't return null)
-    } catch {
-      return false;
-    }
-    sync();
-    void botMove();
+  // Apply a move for the side to move at the viewed ply; truncates any later plies (diverging the
+  // line). Shared by drag + tap. The bot replies only if the move handed it the turn.
+  const playMove = useCallback((from: string, to: string): boolean => {
+    if (thinking) return false;
+    const next = truncateAndPlay(historyRef.current, viewPly, { from, to });
+    if (!next) return false;
+    commit(next);
+    if (shouldBotReply(boardAtPly(next, next.length), botColor)) void botMoveRef.current();
     return true;
-  }, [thinking, playerColor, botMove, sync]);
+  }, [thinking, viewPly, botColor, commit]);
 
-  const onDrop = useCallback((from: string, to: string) => tryHumanMove(from, to), [tryHumanMove]);
+  const onDrop = useCallback((from: string, to: string) => playMove(from, to), [playMove]);
 
-  // Tap-to-move (mobile-friendly): tap a piece to select, tap a target to move.
+  // Tap-to-move: tap a piece of the side-to-move to select, tap a target to move.
   const onSquareClick = useCallback((square: string) => {
-    const g = gameRef.current;
-    if (thinking || g.isGameOver() || g.turn() !== playerColor) return;
-    const r = resolveClick(g, selected, square, playerColor);
+    if (thinking) return;
+    const b = boardAtPly(historyRef.current, viewPly);
+    if (b.isGameOver()) return;
+    const r = resolveClick(b, selected, square, b.turn()); // mover = the side to move at the viewed ply
     if (r.type === "select") setSelected(r.from);
     else if (r.type === "deselect" || r.type === "ignore") setSelected(null);
-    else if (r.type === "move") {
-      // On success the [fen] effect clears the selection; on an illegal target, clear it here.
-      if (!tryHumanMove(r.from, r.to)) setSelected(null);
-    }
-  }, [thinking, playerColor, selected, tryHumanMove]);
+    else if (r.type === "move") { if (!playMove(r.from, r.to)) setSelected(null); }
+  }, [thinking, viewPly, selected, playMove]);
 
-  const undo = useCallback(() => {
-    if (thinking) return;
-    undoToHumanTurn(gameRef.current); // back to the human's previous turn (their move + the bot's reply)
-    sync();
-  }, [thinking, sync]);
+  const goBack = useCallback(() => { if (!thinking) setViewPly((p) => Math.max(0, p - 1)); }, [thinking]);
+  const goForward = useCallback(() => {
+    if (!thinking) setViewPly((p) => Math.min(historyRef.current.length, p + 1));
+  }, [thinking]);
+
+  // Arrow keys step through history (ignored while a form control is focused).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (document.activeElement as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "ArrowLeft") goBack();
+      else if (e.key === "ArrowRight") goForward();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [goBack, goForward]);
 
   const newGame = useCallback(() => {
     if (thinking) return;
-    gameRef.current = new Chess();
-    setLastMove(null);
-    setFen(gameRef.current.fen());
+    commit([]);
     if (playerColor === "b") void botMoveRef.current();
-  }, [thinking, playerColor]);
+  }, [thinking, playerColor, commit]);
 
   const copyMoves = useCallback(async () => {
-    const pgn = gameRef.current.pgn();
     try {
-      await navigator.clipboard.writeText(pgn);
+      await navigator.clipboard.writeText(boardAtPly(historyRef.current, historyRef.current.length).pgn());
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -178,13 +119,46 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
     }
   }, []);
 
-  const view = gameRef.current; // in sync with `fen` (every mutation calls sync())
-  const hasMoves = view.history().length > 0;
+  // Picking a color starts a fresh game.
+  useEffect(() => { commit([]); }, [playerColor, commit]);
 
-  // Square highlights: blue = your current top suggestion, yellow = the last move played.
+  // If the human is Black, the bot (White) opens the fresh game once the engine is ready.
+  useEffect(() => {
+    if (engine && botShouldOpen(playerColor, historyRef.current.length)) void botMoveRef.current();
+  }, [engine, playerColor]);
+
+  // Clear the tap selection on any position/view change.
+  useEffect(() => { setSelected(null); }, [history, viewPly]);
+
+  // Analysis panel (top moves at the analysis elo, side-to-move) + WDL bar (at the bot's elo).
+  useEffect(() => {
+    if (!engine) { setAnalysis([]); setWdl(null); return; }
+    const b = boardAtPly(history, viewPly);
+    let cancelled = false;
+    (async () => {
+      if (showAnalysis && !b.isGameOver()) {
+        const list = await topMoves(engine, b, analysisElo, 5);
+        if (!cancelled) setAnalysis(list);
+      } else if (!cancelled) setAnalysis([]);
+      const stm = b.turn();
+      try {
+        const v = await engine.value(b, botElo);
+        if (!cancelled) { setWdl(v); setWdlStm(stm); }
+      } catch { if (!cancelled) setWdl(null); }
+    })().catch(() => {});
+    return () => { cancelled = true; };
+  }, [engine, history, viewPly, analysisElo, botElo, showAnalysis]);
+
+  // The bot elo is locked once any move has been played; report that to the parent control.
+  useEffect(() => { onGameStartedChange(history.length > 0); }, [history, onGameStartedChange]);
+
+  // Last move into the viewed position (yellow highlight + label).
+  const verbose = board.history({ verbose: true });
+  const lastMove = verbose.length ? verbose[verbose.length - 1] : null;
+
   const customSquareStyles: Record<string, React.CSSProperties> = {};
-  if (yourMoves.length > 0) {
-    const top = yourMoves[0];
+  if (analysis.length > 0) { // top suggestion at the analysis elo
+    const top = analysis[0];
     customSquareStyles[top.uci.slice(0, 2)] = { background: "rgba(74,144,217,0.5)" };
     customSquareStyles[top.uci.slice(2, 4)] = { background: "rgba(74,144,217,0.5)" };
   }
@@ -192,25 +166,28 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
     customSquareStyles[lastMove.from] = { background: "rgba(255,213,79,0.6)" };
     customSquareStyles[lastMove.to] = { background: "rgba(255,213,79,0.6)" };
   }
-  // Tap-to-move: highlight the selected square + dots on its legal targets (rings for captures).
   if (selected) {
     customSquareStyles[selected] = { ...customSquareStyles[selected], background: "rgba(74,144,217,0.55)" };
-    for (const m of view.moves({ square: selected as any, verbose: true })) {
+    for (const m of board.moves({ square: selected as any, verbose: true })) {
       customSquareStyles[m.to] = {
         ...customSquareStyles[m.to],
         background: (m as any).captured
-          ? "radial-gradient(circle, transparent 58%, rgba(74,144,217,0.45) 60%)" // ring around a capturable piece
-          : "radial-gradient(circle, rgba(74,144,217,0.5) 22%, transparent 24%)",  // dot on an empty target
+          ? "radial-gradient(circle, transparent 58%, rgba(74,144,217,0.45) 60%)"
+          : "radial-gradient(circle, rgba(74,144,217,0.5) 22%, transparent 24%)",
       };
     }
   }
+
+  const status = thinking ? "Bot is thinking…"
+    : !atTip ? `Viewing move ${viewPly}/${tip}`
+    : lastMove ? `Last move: ${lastMove.san}` : "";
 
   return (
     <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
       <WDLBar wdl={wdl} sideToMove={wdlStm} playerColor={playerColor} height={480} />
       <div style={{ width: 480 }}>
         <Chessboard
-          position={fen}
+          position={board.fen()}
           onPieceDrop={onDrop}
           onSquareClick={onSquareClick}
           arePiecesDraggable={!thinking}
@@ -220,23 +197,18 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
         />
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap", minHeight: 24 }}>
           <button onClick={newGame} disabled={thinking}>New game</button>
-          <button onClick={undo} disabled={thinking || !hasMoves}>Undo</button>
-          <button onClick={copyMoves} disabled={!hasMoves}>{copied ? "Copied!" : "Copy moves"}</button>
-          <span style={{ color: "#555" }}>
-            {thinking ? "Bot is thinking…" : lastMove ? `Last move: ${lastMove.san}` : ""}
-          </span>
+          <button onClick={goBack} disabled={thinking || viewPly === 0}>◀</button>
+          <button onClick={goForward} disabled={thinking || atTip}>▶</button>
+          <button onClick={copyMoves} disabled={tip === 0}>{copied ? "Copied!" : "Copy moves"}</button>
+          <span style={{ color: "#555" }}>{status}</span>
         </div>
-        {view.isGameOver() && <p>Game over: {view.isCheckmate() ? "checkmate" : "draw"}</p>}
+        {board.isGameOver() && <p>Game over: {board.isCheckmate() ? "checkmate" : "draw"}</p>}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <ThinkingPanel
-          title="Bot's last move"
-          moves={botAnalysis?.list ?? []}
-          highlightUci={botAnalysis?.chosenUci}
-          emptyHint="No bot move yet"
-        />
-        <ThinkingPanel title="Your move" moves={yourMoves} emptyHint="—" />
-      </div>
+      {showAnalysis && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          <ThinkingPanel title="What would play here" moves={analysis} emptyHint="—" />
+        </div>
+      )}
     </div>
   );
 }
