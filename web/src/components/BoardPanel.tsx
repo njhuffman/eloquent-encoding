@@ -9,8 +9,13 @@ import { resolveClick } from "../clickMove";
 import { boardAtPly, truncateAndPlay, shouldBotReply } from "../gameNav";
 import type { Engine } from "../inference/engine";
 import type { OpeningBookSet } from "../inference/openingBook";
+import { EloEstimate } from "./EloEstimate";
+import { posteriorFromLogProbs } from "../eloEstimate";
 
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
+
+const ELO_BANDS = [600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400];
+const MIN_ESTIMATE_MOVES = 3;
 
 type MoveProb = { uci: string; san: string; prob: number };
 
@@ -31,6 +36,9 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
   const [wdlStm, setWdlStm] = useState<"w" | "b">("w");
   const [selected, setSelected] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const eloCacheRef = useRef<Map<string, number[]>>(new Map()); // move-prefix → per-band log P(move)
+  const [estimate, setEstimate] = useState<{ posterior: number[]; meanElo: number; mapElo: number } | null>(null);
+  const [estimateMoves, setEstimateMoves] = useState(0);
 
   const board = boardAtPly(history, viewPly); // the displayed position
   const tip = history.length;
@@ -149,6 +157,35 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
     return () => { cancelled = true; };
   }, [engine, history, viewPly, analysisElo, botElo, showAnalysis]);
 
+  // Player-elo estimate: score each of the player's own-color moves in the current line under every
+  // band, accumulate into a posterior. Per-ply rows cached by move-prefix so normal play computes
+  // only the new ply and truncating rewinds reuse unchanged prefixes.
+  useEffect(() => {
+    if (!engine) { setEstimate(null); setEstimateMoves(0); return; }
+    let cancelled = false;
+    (async () => {
+      const full = boardAtPly(history, history.length).history({ verbose: true });
+      const rows: number[][] = [];
+      for (let i = 0; i < full.length; i++) {
+        if (full[i].color !== playerColor) continue;
+        const key = history.slice(0, i + 1).join(" ");
+        let row = eloCacheRef.current.get(key);
+        if (!row) {
+          const before = boardAtPly(history, i);
+          const probs = await engine.moveProbsByElo(before, { from: full[i].from, to: full[i].to }, ELO_BANDS);
+          if (cancelled) return;
+          row = probs.map((p) => Math.log(Math.max(p, 1e-9)));
+          eloCacheRef.current.set(key, row);
+        }
+        rows.push(row);
+      }
+      if (cancelled) return;
+      setEstimateMoves(rows.length);
+      setEstimate(rows.length >= MIN_ESTIMATE_MOVES ? posteriorFromLogProbs(rows, ELO_BANDS) : null);
+    })().catch(() => {});
+    return () => { cancelled = true; };
+  }, [engine, history, playerColor]);
+
   // The bot elo is locked once any move has been played; report that to the parent control.
   useEffect(() => { onGameStartedChange(history.length > 0); }, [history, onGameStartedChange]);
 
@@ -204,11 +241,10 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
         </div>
         {board.isGameOver() && <p>Game over: {board.isCheckmate() ? "checkmate" : "draw"}</p>}
       </div>
-      {showAnalysis && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          <ThinkingPanel title="What would play here" moves={analysis} emptyHint="—" />
-        </div>
-      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        {showAnalysis && <ThinkingPanel title="What would play here" moves={analysis} emptyHint="—" />}
+        <EloEstimate estimate={estimate} bands={ELO_BANDS} moves={estimateMoves} minMoves={MIN_ESTIMATE_MOVES} />
+      </div>
     </div>
   );
 }

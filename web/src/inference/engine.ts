@@ -1,5 +1,5 @@
 import type { Chess } from "chess.js";
-import { boardToTensor, indexToSquare } from "./boardTensor";
+import { boardToTensor, indexToSquare, squareToIndex } from "./boardTensor";
 import { eloToBucket } from "./elo";
 import { legalFromMask, legalToMask } from "./legal";
 import { maskedSoftmax, pickIndex } from "./sample";
@@ -90,6 +90,26 @@ export class Engine {
       return (await this.run(this.th, { squares: sq, from_sq: fsqT, elo_idx: eloT }))["to_logits"].data;
     };
     return { fromLogits, toLogits };
+  }
+
+  // Probability the policy assigns to a SPECIFIC move (from→to), at each elo. Encodes once
+  // (the encoder is elo-independent), then runs the two heads per elo with legality-masked
+  // softmax. Used by the player-elo estimate.
+  async moveProbsByElo(board: Chess, move: { from: string; to: string }, elos: number[]): Promise<number[]> {
+    const { squares: sq } = await this.encode(board);
+    const fromIdx = squareToIndex(move.from), toIdx = squareToIndex(move.to);
+    const fromMask = legalFromMask(board), toMask = legalToMask(board, fromIdx);
+    const out: number[] = [];
+    for (const elo of elos) {
+      const eloT = this.elo(elo);
+      const fl = (await this.run(this.fh, { squares: sq, elo_idx: eloT }))["from_logits"].data;
+      const pFrom = maskedSoftmax(fl, fromMask, 1.0)[fromIdx];
+      const fsqT = new this.ort.Tensor("int64", BigInt64Array.from([BigInt(fromIdx)]), [1]);
+      const tl = (await this.run(this.th, { squares: sq, from_sq: fsqT, elo_idx: eloT }))["to_logits"].data;
+      const pTo = maskedSoftmax(tl, toMask, 1.0)[toIdx];
+      out.push(pFrom * pTo);
+    }
+    return out;
   }
 
   async chooseMove(board: Chess, elo: number, opts: { temperature: number; greedy?: boolean; rand?: () => number }) {

@@ -4,6 +4,9 @@ import { Chess } from "chess.js";
 import { Engine } from "./engine";
 import { indexToSquare } from "./boardTensor";
 import fixtures from "./__fixtures__/cases.json";
+import { squareToIndex } from "./boardTensor";
+import { maskedSoftmax } from "./sample";
+import { legalFromMask, legalToMask } from "./legal";
 
 describe("Engine (int8) parity vs python fixtures", () => {
   it("greedy top move matches python top_move_uci", async () => {
@@ -28,6 +31,29 @@ function softmax3(a: number[] | Float32Array) {
   const s = e[0] + e[1] + e[2];
   return [e[0] / s, e[1] / s, e[2] / s];
 }
+
+describe("Engine.moveProbsByElo", () => {
+  it("equals the masked from/to product from distributions, and is a probability", async () => {
+    const eng = await Engine.load(ort as any, {
+      encode: "public/encode_int8.onnx",
+      fromHead: "public/from_head_int8.onnx",
+      toHead: "public/to_head_int8.onnx",
+      valueHead: "public/value_head_int8.onnx",
+    }, { nEloBuckets: fixtures.n_elo_buckets });
+    const board = new Chess(); // start position
+    const elo = 1500;
+    const { fromLogits, toLogits } = await eng.distributions(board, elo);
+    const fromIdx = squareToIndex("e2"), toIdx = squareToIndex("e4");
+    const pFrom = maskedSoftmax(fromLogits, legalFromMask(board), 1.0)[fromIdx];
+    const tl = await toLogits(fromIdx);
+    const pTo = maskedSoftmax(tl, legalToMask(board, fromIdx), 1.0)[toIdx];
+    const expected = pFrom * pTo;
+    const [got] = await eng.moveProbsByElo(board, { from: "e2", to: "e4" }, [elo]);
+    expect(got).toBeCloseTo(expected, 6);
+    expect(got).toBeGreaterThan(0);
+    expect(got).toBeLessThanOrEqual(1);
+  });
+});
 
 describe("Engine.value parity vs python fixtures", () => {
   it("WDL softmax matches python value_logits", async () => {
