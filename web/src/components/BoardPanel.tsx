@@ -15,7 +15,8 @@ import { fitBoardSize } from "../boardSize";
 
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 
-const ELO_BANDS = [600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400];
+// The bands the deployed model was actually trained on (lichess elo 1000–1999, 10 strata).
+const ELO_BANDS = [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900];
 const MIN_ESTIMATE_MOVES = 3;
 
 type MoveProb = { uci: string; san: string; prob: number };

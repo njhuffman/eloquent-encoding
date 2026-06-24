@@ -18,7 +18,7 @@ export function EloEstimate(
   return (
     <div className="card">
       <h3 className="card__title">Your estimated rating</h3>
-      <div className="estimate__rating">≈ {Math.round(estimate.meanElo / 50) * 50}</div>
+      <div className="estimate__rating">≈ {estimate.mapElo}</div>
       <div className="estimate__from">from {moves} of your moves</div>
       <div className="estimate__chart">
         {bands.map((b, i) => (
