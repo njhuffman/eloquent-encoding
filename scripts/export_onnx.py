@@ -19,28 +19,31 @@ def board_tensor_for_fen(fen: str) -> np.ndarray:
     return packed_to_board_tensor(packed).numpy().astype(np.float32)  # (1,8,8,18)
 
 
-def export_fp32(checkpoint_path: str, out_dir) -> dict:
+def export_fp32(checkpoint_path: str, out_dir, *, policy=None) -> dict:
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     ck = torch.load(checkpoint_path, map_location="cpu")
-    policy = BasePolicy.from_config(ck["architecture"])
-    _loaded = policy.load_state_dict(ck["model"], strict=False)
-    assert not _loaded.unexpected_keys and all(k.startswith("value_head") for k in _loaded.missing_keys), \
-        f"checkpoint mismatch: unexpected={_loaded.unexpected_keys} missing={_loaded.missing_keys}"
-    enc, fh, th = build_export_modules(policy)
+    if policy is None:
+        policy = BasePolicy.from_config(ck["architecture"])
+        _loaded = policy.load_state_dict(ck["model"], strict=False)
+        assert not _loaded.unexpected_keys and all(k.startswith("value_head") for k in _loaded.missing_keys), \
+            f"checkpoint mismatch: unexpected={_loaded.unexpected_keys} missing={_loaded.missing_keys}"
+    enc, fh, th, vh = build_export_modules(policy)
     d = int(ck["architecture"]["d_model"])
 
     bt = torch.from_numpy(board_tensor_for_fen(chess.STARTING_FEN))
     with torch.no_grad():
-        squares = enc(bt)
+        squares, cls = enc(bt)
     elo = torch.tensor([15], dtype=torch.long)
     fsq = torch.tensor([0], dtype=torch.long)
 
     torch.onnx.export(enc, (bt,), str(out_dir / "encode.onnx"), opset_version=OPSET,
-                      input_names=["board_tensor"], output_names=["squares"])
+                      input_names=["board_tensor"], output_names=["squares", "cls"])
     torch.onnx.export(fh, (squares, elo), str(out_dir / "from_head.onnx"), opset_version=OPSET,
                       input_names=["squares", "elo_idx"], output_names=["from_logits"])
     torch.onnx.export(th, (squares, fsq, elo), str(out_dir / "to_head.onnx"), opset_version=OPSET,
                       input_names=["squares", "from_sq", "elo_idx"], output_names=["to_logits"])
+    torch.onnx.export(vh, (cls, elo), str(out_dir / "value_head.onnx"), opset_version=OPSET,
+                      input_names=["cls", "elo_idx"], output_names=["value_logits"])
     return {"d_model": d, "n_elo_buckets": int(ck["architecture"]["n_elo_buckets"])}
 
 
@@ -48,7 +51,7 @@ def quantize_and_check(fp32_dir, out_dir) -> dict:
     from onnxruntime.quantization import quantize_dynamic, QuantType
     fp32_dir = Path(fp32_dir); out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     total = 0
-    for name in ("encode", "from_head", "to_head"):
+    for name in ("encode", "from_head", "to_head", "value_head"):
         dst = out_dir / f"{name}_int8.onnx"
         quantize_dynamic(str(fp32_dir / f"{name}.onnx"), str(dst), weight_type=QuantType.QInt8)
         total += dst.stat().st_size
@@ -68,7 +71,7 @@ def main() -> int:
     info = quantize_and_check(fp32, web_pub)
     (web_pub / "model_meta.json").write_text(json.dumps(
         {"d_model": meta["d_model"], "n_elo_buckets": meta["n_elo_buckets"],
-         "files": ["encode_int8.onnx", "from_head_int8.onnx", "to_head_int8.onnx"]}))
+         "files": ["encode_int8.onnx", "from_head_int8.onnx", "to_head_int8.onnx", "value_head_int8.onnx"]}))
     print("int8 deploy artifacts ->", web_pub, info)
     return 0
 
