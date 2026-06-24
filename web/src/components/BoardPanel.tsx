@@ -14,8 +14,10 @@ const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 
 type MoveProb = { uci: string; san: string; prob: number };
 
-export function BoardPanel({ engine, elo, temperature, books, playerColor }:
-  { engine: Engine | null; elo: number; temperature: number; books: OpeningBookSet | null; playerColor: "w" | "b" }) {
+export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperature, books, playerColor, onGameStartedChange }:
+  { engine: Engine | null; botElo: number; analysisElo: number; showAnalysis: boolean;
+    temperature: number; books: OpeningBookSet | null; playerColor: "w" | "b";
+    onGameStartedChange: (started: boolean) => void }) {
   const botColor = botColorOf(playerColor);
 
   // The current line as an authoritative SAN list; `viewPly` = how many plies are shown (length = live tip).
@@ -49,13 +51,13 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
       await new Promise((r) => setTimeout(r, MOVE_DELAY_MS)); // let the human see their move land first
       const cur = boardAtPly(historyRef.current, historyRef.current.length);
       if (cur.isGameOver()) return;
-      const mv = await bookOrModelMove(books, engine, cur, elo, { temperature, greedy: false });
+      const mv = await bookOrModelMove(books, engine, cur, botElo, { temperature, greedy: false });
       const next = truncateAndPlay(historyRef.current, historyRef.current.length, mv);
       if (next) commit(next);
     } finally {
       setThinking(false);
     }
-  }, [books, engine, elo, temperature, commit]);
+  }, [books, engine, botElo, temperature, commit]);
 
   const botMoveRef = useRef(botMove);
   botMoveRef.current = botMove;
@@ -128,24 +130,27 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
   // Clear the tap selection on any position/view change.
   useEffect(() => { setSelected(null); }, [history, viewPly]);
 
-  // Analysis panel (top moves for the viewed side-to-move) + WDL bar, recomputed on view/elo change.
+  // Analysis panel (top moves at the analysis elo, side-to-move) + WDL bar (at the bot's elo).
   useEffect(() => {
     if (!engine) { setAnalysis([]); setWdl(null); return; }
     const b = boardAtPly(history, viewPly);
     let cancelled = false;
     (async () => {
-      if (!b.isGameOver()) {
-        const list = await topMoves(engine, b, elo, 5);
+      if (showAnalysis && !b.isGameOver()) {
+        const list = await topMoves(engine, b, analysisElo, 5);
         if (!cancelled) setAnalysis(list);
       } else if (!cancelled) setAnalysis([]);
       const stm = b.turn();
       try {
-        const v = await engine.value(b, elo);
+        const v = await engine.value(b, botElo);
         if (!cancelled) { setWdl(v); setWdlStm(stm); }
       } catch { if (!cancelled) setWdl(null); }
     })().catch(() => {});
     return () => { cancelled = true; };
-  }, [engine, history, viewPly, elo]);
+  }, [engine, history, viewPly, analysisElo, botElo, showAnalysis]);
+
+  // The bot elo is locked once any move has been played; report that to the parent control.
+  useEffect(() => { onGameStartedChange(history.length > 0); }, [history, onGameStartedChange]);
 
   // Last move into the viewed position (yellow highlight + label).
   const verbose = board.history({ verbose: true });
@@ -199,9 +204,11 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
         </div>
         {board.isGameOver() && <p>Game over: {board.isCheckmate() ? "checkmate" : "draw"}</p>}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <ThinkingPanel title="What would play here" moves={analysis} emptyHint="—" />
-      </div>
+      {showAnalysis && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          <ThinkingPanel title="What would play here" moves={analysis} emptyHint="—" />
+        </div>
+      )}
     </div>
   );
 }
