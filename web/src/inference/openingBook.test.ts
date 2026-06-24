@@ -39,3 +39,22 @@ describe("OpeningBook.lookup", () => {
     expect(new Chess().moves({ verbose: true }).some((m) => m.from === mv!.from && m.to === mv!.to)).toBe(true);
   });
 });
+
+describe("OpeningBook.topMoves", () => {
+  const start = epdKey(new Chess());
+  const bk = () => new OpeningBook(1000, { [start]: { n: 900, moves: { e2e4: 600, d2d4: 300 } } });
+
+  it("ranks the book's legal moves by conditional frequency (SAN)", () => {
+    const top = bk().topMoves(new Chess(), 0.01, 5);
+    expect(top).not.toBeNull();
+    expect(top!.map((m) => m.san)).toEqual(["e4", "d4"]);
+    expect(top![0]).toMatchObject({ uci: "e2e4" });
+    expect(top![0].prob).toBeCloseTo(600 / 900, 6);
+    expect(top![1].prob).toBeCloseTo(300 / 900, 6);
+  });
+  it("null below threshold / unknown position", () => {
+    expect(new OpeningBook(1000, { [start]: { n: 5, moves: { e2e4: 5 } } })
+      .topMoves(new Chess(), 0.01, 5)).toBeNull();
+    expect(new OpeningBook(1000, {}).topMoves(new Chess(), 0.01, 5)).toBeNull();
+  });
+});

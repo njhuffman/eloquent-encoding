@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Chessboard } from "react-chessboard";
 import { topMoves } from "../inference/topMoves";
-import { bookOrModelMove } from "../inference/bookMove";
+import { bookOrModelMove, BOOK_THRESHOLD } from "../inference/bookMove";
 import { ThinkingPanel } from "./ThinkingPanel";
 import { botColorOf, boardOrientationOf, botShouldOpen } from "../playerColor";
 import { WDLBar, type WDL } from "./WDLBar";
@@ -34,6 +34,7 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
   const [viewPly, setViewPly] = useState(0);
   const [thinking, setThinking] = useState(false);
   const [analysis, setAnalysis] = useState<MoveProb[]>([]);
+  const [analysisFromBook, setAnalysisFromBook] = useState(false);
   const [wdl, setWdl] = useState<WDL | null>(null);
   const [wdlStm, setWdlStm] = useState<"w" | "b">("w");
   const [selected, setSelected] = useState<string | null>(null);
@@ -168,9 +169,17 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
     let cancelled = false;
     (async () => {
       if (showAnalysis && !b.isGameOver()) {
-        const list = await topMoves(engine, b, analysisElo, 5);
-        if (!cancelled) setAnalysis(list);
-      } else if (!cancelled) setAnalysis([]);
+        // Show the opening book when the bot would actually play from it at this elo; else the model.
+        const bk = books ? await books.forElo(analysisElo) : null;
+        if (cancelled) return;
+        const bookList = bk?.topMoves(b, BOOK_THRESHOLD, 5) ?? null;
+        if (bookList) {
+          if (!cancelled) { setAnalysis(bookList); setAnalysisFromBook(true); }
+        } else {
+          const list = await topMoves(engine, b, analysisElo, 5);
+          if (!cancelled) { setAnalysis(list); setAnalysisFromBook(false); }
+        }
+      } else if (!cancelled) { setAnalysis([]); setAnalysisFromBook(false); }
       const stm = b.turn();
       try {
         const v = await engine.value(b, botElo);
@@ -178,7 +187,7 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
       } catch { if (!cancelled) setWdl(null); }
     })().catch(() => {});
     return () => { cancelled = true; };
-  }, [engine, history, viewPly, analysisElo, botElo, showAnalysis]);
+  }, [engine, books, history, viewPly, analysisElo, botElo, showAnalysis]);
 
   // Player-elo estimate: score each of the player's own-color moves in the current line under every
   // band, accumulate into a posterior. Per-ply rows cached by move-prefix so normal play computes
@@ -269,7 +278,9 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
         {board.isGameOver() && <p className="gameover">Game over: {board.isCheckmate() ? "checkmate" : "draw"}</p>}
       </div>
       <div className="sidebar">
-        {showAnalysis && <ThinkingPanel title="What would play here" moves={analysis} emptyHint="—" />}
+        {showAnalysis && <ThinkingPanel
+          title={analysisFromBook ? "Opening book (played here)" : "What would play here"}
+          moves={analysis} emptyHint="—" />}
         <EloEstimate estimate={estimate} bands={ELO_BANDS} moves={estimateMoves} minMoves={MIN_ESTIMATE_MOVES} />
       </div>
     </div>
