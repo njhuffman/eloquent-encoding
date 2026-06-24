@@ -9,6 +9,7 @@ describe("topMoves", () => {
   it("returns sorted legal moves with probabilities summing <= 1", async () => {
     const eng = await Engine.load(ort as any, {
       encode: "public/encode_int8.onnx", fromHead: "public/from_head_int8.onnx", toHead: "public/to_head_int8.onnx",
+      valueHead: "public/value_head_int8.onnx",
     }, { nEloBuckets: fixtures.n_elo_buckets });
     const moves = await topMoves(eng, new Chess(), 1500, 5);
     expect(moves.length).toBe(5);

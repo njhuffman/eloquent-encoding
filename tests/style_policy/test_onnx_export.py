@@ -15,16 +15,18 @@ def _board_tensor(b=2):
 
 def test_export_wrappers_match_eager():
     policy = BasePolicy.from_config(CFG).eval()
-    enc, fh, th = build_export_modules(policy)
+    enc, fh, th, vh = build_export_modules(policy)
     bt = _board_tensor()
     with torch.no_grad():
-        _, squares_ref = policy.encoder(bt)
-        squares = enc(bt)
+        cls_ref, squares_ref = policy.encoder(bt)
+        squares, cls = enc(bt)
         assert torch.allclose(squares, squares_ref, atol=1e-5)
+        assert torch.allclose(cls, cls_ref, atol=1e-5)
         elo = torch.tensor([12, 18], dtype=torch.long)
         assert torch.allclose(fh(squares, elo), policy.from_head(squares, elo_idx=elo), atol=1e-5)
         fsq = torch.tensor([0, 4], dtype=torch.long)
         assert torch.allclose(th(squares, fsq, elo), policy.to_head(squares, fsq, elo_idx=elo), atol=1e-5)
+        assert torch.allclose(vh(cls, elo), policy.value_head(cls, elo_idx=elo), atol=1e-5)
 
 
 import numpy as np, onnxruntime as ort, chess
@@ -34,6 +36,7 @@ from style_policy.model import BasePolicy
 from style_policy.model_spec import elo_to_bucket
 
 CKPT = "style_policy_checkpoints/base_64M/base_64M_stage_1.pt"
+WDL_CKPT = "style_policy_checkpoints/wdl_16M/wdl_16M_stage_1.pt"
 FENS = [chess.STARTING_FEN,
         "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
         "8/8/8/4k3/8/4K3/4P3/8 w - - 0 1"]
@@ -82,9 +85,27 @@ def test_int8_parity_top1(tmp_path):
 
 def test_fixtures_written(tmp_path, monkeypatch):
     from scripts.gen_web_fixtures import build_cases
-    cases = build_cases(CKPT, FENS, elo=1500)
+    cases = build_cases(WDL_CKPT, FENS, elo=1500)
     assert len(cases["cases"]) == len(FENS)
     c = cases["cases"][0]
     assert len(c["board_tensor"]) == 8 * 8 * 18
     assert len(c["from_logits"]) == 64 and len(c["legal_from"]) == 64
+    assert len(c["value_logits"]) == 3
     assert c["bucket"] == 15
+
+
+def test_fp32_value_head_parity(tmp_path):
+    ck = torch.load(CKPT, map_location="cpu")
+    policy = BasePolicy.from_config(ck["architecture"]); policy.load_state_dict(ck["model"], strict=False); policy.eval()
+    export_fp32(CKPT, tmp_path, policy=policy)
+    enc = ort.InferenceSession(str(tmp_path / "encode.onnx"))
+    vh = ort.InferenceSession(str(tmp_path / "value_head.onnx"))
+    for fen in FENS:
+        bt = board_tensor_for_fen(fen); elo = np.array([15], dtype=np.int64)
+        with torch.no_grad():
+            cls_ref, _ = policy.encoder(torch.from_numpy(bt))
+            vlog_ref = policy.value_head(cls_ref, elo_idx=torch.from_numpy(elo)).numpy()
+        outs = {o.name: i for i, o in enumerate(enc.get_outputs())}
+        cls = enc.run(None, {"board_tensor": bt})[outs["cls"]]
+        vlog = vh.run(None, {"cls": cls, "elo_idx": elo})[0]
+        assert np.allclose(vlog, vlog_ref, atol=1e-4)

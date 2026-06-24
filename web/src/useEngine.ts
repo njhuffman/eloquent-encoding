@@ -15,6 +15,7 @@ export function useEngine() {
         encode: base + "encode_int8.onnx",
         fromHead: base + "from_head_int8.onnx",
         toHead: base + "to_head_int8.onnx",
+        valueHead: base + "value_head_int8.onnx",
       }, { nEloBuckets: meta.n_elo_buckets }))
       .then(setEngine)
       .catch((e) => setError(String(e)));

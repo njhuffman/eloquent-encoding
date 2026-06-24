@@ -29,17 +29,19 @@ function serializedRun(
 export class Engine {
   private constructor(
     private ort: OrtLike, private enc: Session, private fh: Session, private th: Session,
-    private nEloBuckets: number,
+    private vh: Session, private nEloBuckets: number,
   ) {}
 
-  static async load(ort: OrtLike, urls: { encode: string; fromHead: string; toHead: string },
+  static async load(ort: OrtLike,
+                    urls: { encode: string; fromHead: string; toHead: string; valueHead: string },
                     meta: { nEloBuckets: number }): Promise<Engine> {
-    const [enc, fh, th] = await Promise.all([
+    const [enc, fh, th, vh] = await Promise.all([
       ort.InferenceSession.create(urls.encode),
       ort.InferenceSession.create(urls.fromHead),
       ort.InferenceSession.create(urls.toHead),
+      ort.InferenceSession.create(urls.valueHead),
     ]);
-    return new Engine(ort, enc, fh, th, meta.nEloBuckets);
+    return new Engine(ort, enc, fh, th, vh, meta.nEloBuckets);
   }
 
   // Serialize a single ORT run behind any in-flight run (module-global queue).
@@ -51,14 +53,23 @@ export class Engine {
     return new this.ort.Tensor("int64", BigInt64Array.from([BigInt(eloToBucket(elo, this.nEloBuckets))]), [1]);
   }
 
-  private async squares(board: Chess) {
+  private async encode(board: Chess): Promise<{ squares: any; cls: any }> {
     const bt = boardToTensor(board);
     const out = await this.run(this.enc, { board_tensor: new this.ort.Tensor("float32", bt, [1, 8, 8, 18]) });
-    return out["squares"];
+    return { squares: out["squares"], cls: out["cls"] };
+  }
+
+  async value(board: Chess, elo: number): Promise<{ loss: number; draw: number; win: number }> {
+    const { cls } = await this.encode(board);
+    const l = (await this.run(this.vh, { cls, elo_idx: this.elo(elo) }))["value_logits"].data;
+    const m = Math.max(l[0], l[1], l[2]);
+    const e = [Math.exp(l[0] - m), Math.exp(l[1] - m), Math.exp(l[2] - m)];
+    const s = e[0] + e[1] + e[2];
+    return { loss: e[0] / s, draw: e[1] / s, win: e[2] / s };
   }
 
   async policy(board: Chess, elo: number) {
-    const sq = await this.squares(board);
+    const { squares: sq } = await this.encode(board);
     const eloT = this.elo(elo);
     const fl = (await this.run(this.fh, { squares: sq, elo_idx: eloT }))["from_logits"].data;
     const fromProbs = maskedSoftmax(fl, legalFromMask(board), 1.0);
@@ -71,7 +82,7 @@ export class Engine {
   }
 
   async distributions(board: Chess, elo: number) {
-    const sq = await this.squares(board);
+    const { squares: sq } = await this.encode(board);
     const eloT = this.elo(elo);
     const fromLogits = (await this.run(this.fh, { squares: sq, elo_idx: eloT }))["from_logits"].data;
     const toLogits = async (fromSq: number) => {
@@ -82,7 +93,7 @@ export class Engine {
   }
 
   async chooseMove(board: Chess, elo: number, opts: { temperature: number; greedy?: boolean; rand?: () => number }) {
-    const sq = await this.squares(board);
+    const { squares: sq } = await this.encode(board);
     const eloT = this.elo(elo);
     const fl = (await this.run(this.fh, { squares: sq, elo_idx: eloT }))["from_logits"].data;
     const fromSq = pickIndex(maskedSoftmax(fl, legalFromMask(board), opts.temperature),

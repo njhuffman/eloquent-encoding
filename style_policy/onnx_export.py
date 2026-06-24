@@ -11,9 +11,9 @@ class EncodeExport(nn.Module):
         super().__init__()
         self.encoder = encoder
 
-    def forward(self, board_tensor: torch.Tensor) -> torch.Tensor:
-        _, squares = self.encoder(board_tensor)
-        return squares
+    def forward(self, board_tensor: torch.Tensor):
+        cls, squares = self.encoder(board_tensor)
+        return squares, cls
 
 
 class FromHeadExport(nn.Module):
@@ -34,6 +34,15 @@ class ToHeadExport(nn.Module):
         return self.to_head(squares, from_sq, elo_idx=elo_idx)
 
 
+class ValueHeadExport(nn.Module):
+    def __init__(self, value_head: nn.Module):
+        super().__init__()
+        self.value_head = value_head
+
+    def forward(self, cls: torch.Tensor, elo_idx: torch.Tensor) -> torch.Tensor:
+        return self.value_head(cls, elo_idx=elo_idx)
+
+
 def build_export_modules(policy):
     policy.eval()
     # nn.TransformerEncoder's nested-tensor fast path uses data-dependent ops that don't trace.
@@ -42,4 +51,5 @@ def build_export_modules(policy):
         enc.encoder.enable_nested_tensor = False
     return (EncodeExport(policy.encoder).eval(),
             FromHeadExport(policy.from_head).eval(),
-            ToHeadExport(policy.to_head).eval())
+            ToHeadExport(policy.to_head).eval(),
+            ValueHeadExport(policy.value_head).eval())
