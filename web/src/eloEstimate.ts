@@ -20,3 +20,13 @@ export function posteriorFromLogProbs(
   }
   return { posterior, meanElo, mapElo };
 }
+
+// Whether a ply should feed the player-elo estimate: it must be the player's own move AND past the
+// opening plies the model skipped during training (positions before then are out-of-distribution,
+// so their per-band likelihoods are noise). `plyIndex` is 0-based; `skipOpeningPlies` mirrors the
+// dataset recipe's `skip_opening_plies` (a move at ply i was a training example iff i >= skip).
+export function shouldScorePly(
+  plyIndex: number, moveColor: "w" | "b", playerColor: "w" | "b", skipOpeningPlies: number,
+): boolean {
+  return moveColor === playerColor && plyIndex >= skipOpeningPlies;
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { posteriorFromLogProbs } from "./eloEstimate";
+import { posteriorFromLogProbs, shouldScorePly } from "./eloEstimate";
 
 const L = Math.log;
 const bands = [1000, 1500, 2000];
@@ -30,5 +30,17 @@ describe("posteriorFromLogProbs", () => {
     const r = posteriorFromLogProbs([], bands);
     for (const p of r.posterior) expect(p).toBeCloseTo(1 / 3, 6);
     expect(r.meanElo).toBeCloseTo(1500, 6);
+  });
+});
+
+describe("shouldScorePly", () => {
+  it("scores the player's own moves only past the skipped opening plies", () => {
+    expect(shouldScorePly(4, "w", "w", 4)).toBe(true);  // first in-distribution white ply
+    expect(shouldScorePly(3, "w", "w", 4)).toBe(false); // opening ply -> skipped
+    expect(shouldScorePly(0, "w", "w", 4)).toBe(false);
+  });
+  it("excludes the opponent's / bot's moves", () => {
+    expect(shouldScorePly(5, "b", "w", 4)).toBe(false); // not the player's color
+    expect(shouldScorePly(6, "b", "b", 4)).toBe(true);  // black player, past opening
   });
 });
