@@ -11,7 +11,7 @@ import type { Engine } from "../inference/engine";
 import type { OpeningBookSet } from "../inference/openingBook";
 import { EloEstimate } from "./EloEstimate";
 import { posteriorFromLogProbs } from "../eloEstimate";
-import { boardSizeFor } from "../boardSize";
+import { fitBoardSize } from "../boardSize";
 
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 
@@ -57,7 +57,14 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const boardWidth = boardSizeFor(hostWidth);
+  // Track viewport height too, so the board also fits vertically (short/landscape phones).
+  const [viewportH, setViewportH] = useState(() => (typeof window !== "undefined" ? window.innerHeight : 800));
+  useEffect(() => {
+    const on = () => setViewportH(window.innerHeight);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  const boardWidth = fitBoardSize(hostWidth, viewportH);
 
   // Commit a new line: set the ref synchronously (for async reads) and jump the view to its tip.
   const commit = useCallback((next: string[]) => {
