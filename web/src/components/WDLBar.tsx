@@ -16,9 +16,6 @@ export function arrangeWDL(
   return { top, mid: { kind: "draw", prob: wdl.draw }, bottom };
 }
 
-const COLORS: Record<Seg["kind"], string> = { white: "#f0f0f0", black: "#333", draw: "#9e9e9e" };
-const LABELC: Record<Seg["kind"], string> = { white: "#222", black: "#eee", draw: "#fff" };
-
 export function WDLBar(
   { wdl, sideToMove, playerColor, height = 480 }:
   { wdl: WDL | null; sideToMove: "w" | "b"; playerColor: "w" | "b"; height?: number },
@@ -29,14 +26,10 @@ export function WDLBar(
         { top: Seg; mid: Seg; bottom: Seg };
   const order: Seg[] = [a.top, a.mid, a.bottom];
   return (
-    <div style={{ display: "flex", flexDirection: "column", width: 28, height,
-                  border: "1px solid #ccc", borderRadius: 4, overflow: "hidden" }}
-         title="White / draw / black win probability">
+    <div className="wdlbar" style={{ height }} title="White / draw / black win probability">
       {order.map((s, i) => (
-        <div key={i} style={{ flexGrow: Math.max(s.prob, 0.0001), flexBasis: 0,
-                              background: COLORS[s.kind], display: "flex",
-                              alignItems: "center", justifyContent: "center",
-                              fontSize: 10, color: LABELC[s.kind] }}>
+        <div key={i} className={`wdlbar__seg is-${s.kind}`}
+             style={{ flexGrow: Math.max(s.prob, 0.0001), flexBasis: 0 }}>
           {wdl && s.prob >= 0.08 ? Math.round(s.prob * 100) : ""}
         </div>
       ))}

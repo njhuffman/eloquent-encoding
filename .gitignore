@@ -47,3 +47,4 @@ htmlcov/
 
 # W&B offline run logs
 wandb/
+.superpowers/
