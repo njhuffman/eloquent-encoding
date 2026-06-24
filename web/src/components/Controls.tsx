@@ -14,12 +14,12 @@ export function Controls({
     <div className="toolbar">
       <label className="control">
         <span className="control__label">Bot elo: {botElo}{botEloLocked ? " 🔒" : ""}</span>
-        <input type="range" min={600} max={2400} step={100} value={botElo} disabled={botEloLocked}
+        <input type="range" min={1000} max={1900} step={100} value={botElo} disabled={botEloLocked}
                onChange={(e) => setBotElo(Number(e.target.value))} />
       </label>
       <label className={"control" + (showAnalysis ? "" : " control--dim")}>
         <span className="control__label">Analysis elo: {analysisElo}</span>
-        <input type="range" min={600} max={2400} step={100} value={analysisElo} disabled={!showAnalysis}
+        <input type="range" min={1000} max={1900} step={100} value={analysisElo} disabled={!showAnalysis}
                onChange={(e) => setAnalysisElo(Number(e.target.value))} />
       </label>
       <label className="check">
