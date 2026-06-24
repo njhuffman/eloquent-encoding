@@ -37,6 +37,23 @@ export class OpeningBook {
     }
     return legal[items[items.length - 1][0]];
   }
+
+  // The book's most-played legal moves at this position (conditional frequencies), or null if the
+  // position isn't in the book above `threshold` — the SAME gate lookup() uses, so the analysis
+  // panel shows the book exactly when the bot would actually play from it.
+  topMoves(board: Chess, threshold: number, k: number): { uci: string; san: string; prob: number }[] | null {
+    const e = this.positions[epdKey(board)];
+    if (!e || this.totalGames <= 0 || e.n / this.totalGames < threshold) return null;
+    const rows: { uci: string; san: string; count: number }[] = [];
+    for (const m of board.moves({ verbose: true })) {
+      const c = e.moves[m.from + m.to + (m.promotion ?? "")];
+      if (c) rows.push({ uci: m.from + m.to, san: m.san, count: c });
+    }
+    if (!rows.length) return null;
+    const total = rows.reduce((s, r) => s + r.count, 0);
+    rows.sort((a, b) => b.count - a.count);
+    return rows.slice(0, k).map((r) => ({ uci: r.uci, san: r.san, prob: r.count / total }));
+  }
 }
 
 export class OpeningBookSet {
