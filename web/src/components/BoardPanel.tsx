@@ -8,6 +8,7 @@ import { bookOrModelMove } from "../inference/bookMove";
 import { undoToHumanTurn } from "../undo";
 import { ThinkingPanel } from "./ThinkingPanel";
 import { botColorOf, boardOrientationOf, botShouldOpen } from "../playerColor";
+import { WDLBar, type WDL } from "./WDLBar";
 
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 
@@ -28,6 +29,7 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
   const [yourMoves, setYourMoves] = useState<MoveProb[]>([]);     // your options for the current position
   const [botAnalysis, setBotAnalysis] = useState<BotAnalysis | null>(null); // bot's choice at its last move
   const [copied, setCopied] = useState(false);
+  const [wdl, setWdl] = useState<WDL | null>(null);
 
   // Push gameRef state into render state (fen + last-move label).
   const sync = useCallback(() => {
@@ -68,6 +70,11 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
       } else if (!cancelled) {
         setBotAnalysis(null);
       }
+      // WDL bar (side-to-move perspective; conditioned on the elo slider)
+      try {
+        const v = await engine.value(new Chess(g.fen()), elo);
+        if (!cancelled) setWdl(v);
+      } catch { if (!cancelled) setWdl(null); }
     })().catch(() => {});
     return () => { cancelled = true; };
   }, [engine, fen, elo, playerColor, botColor]);
@@ -161,6 +168,7 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
 
   return (
     <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+      <WDLBar wdl={wdl} sideToMove={view.turn()} playerColor={playerColor} height={480} />
       <div style={{ width: 480 }}>
         <Chessboard
           position={fen}
