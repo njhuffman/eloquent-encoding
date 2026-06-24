@@ -10,7 +10,7 @@ import { boardAtPly, truncateAndPlay, shouldBotReply } from "../gameNav";
 import type { Engine } from "../inference/engine";
 import type { OpeningBookSet } from "../inference/openingBook";
 import { EloEstimate } from "./EloEstimate";
-import { posteriorFromLogProbs } from "../eloEstimate";
+import { posteriorFromLogProbs, shouldScorePly } from "../eloEstimate";
 import { fitBoardSize } from "../boardSize";
 
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
@@ -18,6 +18,9 @@ const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 // The bands the deployed model was actually trained on (lichess elo 1000–1999, 10 strata).
 const ELO_BANDS = [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900];
 const MIN_ESTIMATE_MOVES = 3;
+// The model trained with skip_opening_plies=4, so its policy on the first 4 plies is
+// out-of-distribution — exclude those from the elo estimate (matches the dataset recipe).
+const SKIP_OPENING_PLIES = 4;
 
 type MoveProb = { uci: string; san: string; prob: number };
 
@@ -199,7 +202,7 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
       const full = boardAtPly(history, history.length).history({ verbose: true });
       const rows: number[][] = [];
       for (let i = 0; i < full.length; i++) {
-        if (full[i].color !== playerColor) continue;
+        if (!shouldScorePly(i, full[i].color, playerColor, SKIP_OPENING_PLIES)) continue;
         const key = history.slice(0, i + 1).join(" ");
         let row = eloCacheRef.current.get(key);
         if (!row) {
