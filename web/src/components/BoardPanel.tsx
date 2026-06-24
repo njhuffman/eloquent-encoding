@@ -11,6 +11,7 @@ import type { Engine } from "../inference/engine";
 import type { OpeningBookSet } from "../inference/openingBook";
 import { EloEstimate } from "./EloEstimate";
 import { posteriorFromLogProbs } from "../eloEstimate";
+import { boardSizeFor } from "../boardSize";
 
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 
@@ -43,6 +44,20 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
   const board = boardAtPly(history, viewPly); // the displayed position
   const tip = history.length;
   const atTip = viewPly === tip;
+
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [hostWidth, setHostWidth] = useState(480); // fallback until measured
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setHostWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const boardWidth = boardSizeFor(hostWidth);
 
   // Commit a new line: set the ref synchronously (for async reads) and jump the view to its tip.
   const commit = useCallback((next: string[]) => {
@@ -220,28 +235,32 @@ export function BoardPanel({ engine, botElo, analysisElo, showAnalysis, temperat
     : lastMove ? `Last move: ${lastMove.san}` : "";
 
   return (
-    <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-      <WDLBar wdl={wdl} sideToMove={wdlStm} playerColor={playerColor} height={480} />
-      <div style={{ width: 480 }}>
-        <Chessboard
-          position={board.fen()}
-          onPieceDrop={onDrop}
-          onSquareClick={onSquareClick}
-          arePiecesDraggable={!thinking}
-          customSquareStyles={customSquareStyles}
-          boardWidth={480}
-          boardOrientation={boardOrientationOf(playerColor)}
-        />
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap", minHeight: 24 }}>
-          <button onClick={newGame} disabled={thinking}>New game</button>
-          <button onClick={goBack} disabled={thinking || viewPly === 0}>◀</button>
-          <button onClick={goForward} disabled={thinking || atTip}>▶</button>
-          <button onClick={copyMoves} disabled={tip === 0}>{copied ? "Copied!" : "Copy moves"}</button>
-          <span style={{ color: "#555" }}>{status}</span>
+    <div className="board-area">
+      <div className="board-block">
+        <div className="board-stack">
+          <WDLBar wdl={wdl} sideToMove={wdlStm} playerColor={playerColor} height={boardWidth} />
+          <div className="board-host" ref={hostRef}>
+            <Chessboard
+              position={board.fen()}
+              onPieceDrop={onDrop}
+              onSquareClick={onSquareClick}
+              arePiecesDraggable={!thinking}
+              customSquareStyles={customSquareStyles}
+              boardWidth={boardWidth}
+              boardOrientation={boardOrientationOf(playerColor)}
+            />
+          </div>
         </div>
-        {board.isGameOver() && <p>Game over: {board.isCheckmate() ? "checkmate" : "draw"}</p>}
+        <div className="navrow">
+          <button className="btn btn--primary" onClick={newGame} disabled={thinking}>New game</button>
+          <button className="btn btn--ghost" onClick={goBack} disabled={thinking || viewPly === 0}>◀</button>
+          <button className="btn btn--ghost" onClick={goForward} disabled={thinking || atTip}>▶</button>
+          <button className="btn btn--ghost" onClick={copyMoves} disabled={tip === 0}>{copied ? "Copied!" : "Copy moves"}</button>
+          <span className="status">{status}</span>
+        </div>
+        {board.isGameOver() && <p className="gameover">Game over: {board.isCheckmate() ? "checkmate" : "draw"}</p>}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div className="sidebar">
         {showAnalysis && <ThinkingPanel title="What would play here" moves={analysis} emptyHint="—" />}
         <EloEstimate estimate={estimate} bands={ELO_BANDS} moves={estimateMoves} minMoves={MIN_ESTIMATE_MOVES} />
       </div>
