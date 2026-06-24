@@ -7,6 +7,7 @@ import { topMoves } from "../inference/topMoves";
 import { bookOrModelMove } from "../inference/bookMove";
 import { undoToHumanTurn } from "../undo";
 import { ThinkingPanel } from "./ThinkingPanel";
+import { botColorOf, boardOrientationOf, botShouldOpen } from "../playerColor";
 
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 
@@ -14,8 +15,10 @@ type LastMove = { san: string; from: string; to: string };
 type MoveProb = { uci: string; san: string; prob: number };
 type BotAnalysis = { list: MoveProb[]; chosenUci: string };
 
-export function BoardPanel({ engine, elo, temperature, books }:
-  { engine: Engine | null; elo: number; temperature: number; books: OpeningBookSet | null }) {
+export function BoardPanel({ engine, elo, temperature, books, playerColor }:
+  { engine: Engine | null; elo: number; temperature: number; books: OpeningBookSet | null; playerColor: "w" | "b" }) {
+  const botColor = botColorOf(playerColor);
+
   // gameRef is the authoritative game (keeps full move history for undo + PGN).
   // `fen` mirrors it in state to drive re-renders.
   const gameRef = useRef(new Chess());
@@ -45,29 +48,44 @@ export function BoardPanel({ engine, elo, temperature, books }:
     const g = gameRef.current;
     let cancelled = false;
     (async () => {
-      // Your move (only meaningful when it's White/human to move and the game is live)
-      if (!g.isGameOver() && g.turn() === "w") {
+      // Your move (only meaningful when it's the human's turn and the game is live)
+      if (!g.isGameOver() && g.turn() === playerColor) {
         const ym = await topMoves(engine, new Chess(g.fen()), elo, 5);
         if (!cancelled) setYourMoves(ym);
       } else if (!cancelled) {
         setYourMoves([]);
       }
-      // Bot's last move: reconstruct the position just before the last Black move
+      // Bot's last move: reconstruct the position just before the bot's last move
       const verbose = g.history({ verbose: true });
-      let lastBlackIdx = -1;
-      for (let i = verbose.length - 1; i >= 0; i--) { if (verbose[i].color === "b") { lastBlackIdx = i; break; } }
-      if (lastBlackIdx >= 0) {
+      let lastBotIdx = -1;
+      for (let i = verbose.length - 1; i >= 0; i--) { if (verbose[i].color === botColor) { lastBotIdx = i; break; } }
+      if (lastBotIdx >= 0) {
         const pre = new Chess();
-        for (let i = 0; i < lastBlackIdx; i++) pre.move(verbose[i].san);
+        for (let i = 0; i < lastBotIdx; i++) pre.move(verbose[i].san);
         const list = await topMoves(engine, pre, elo, 5);
-        const mv = verbose[lastBlackIdx];
+        const mv = verbose[lastBotIdx];
         if (!cancelled) setBotAnalysis({ list, chosenUci: mv.from + mv.to });
       } else if (!cancelled) {
         setBotAnalysis(null);
       }
     })().catch(() => {});
     return () => { cancelled = true; };
-  }, [engine, fen, elo]);
+  }, [engine, fen, elo, playerColor, botColor]);
+
+  // Picking a color starts a fresh game.
+  useEffect(() => {
+    gameRef.current = new Chess();
+    setLastMove(null);
+    setFen(gameRef.current.fen());
+  }, [playerColor]);
+
+  // If the human is Black, the bot (White) opens once the board is fresh + engine is ready.
+  useEffect(() => {
+    if (engine && botShouldOpen(playerColor, gameRef.current.history().length) &&
+        !gameRef.current.isGameOver()) {
+      void botMoveRef.current();
+    }
+  }, [engine, playerColor]);
 
   const botMove = useCallback(async () => {
     const g = gameRef.current;
@@ -84,8 +102,12 @@ export function BoardPanel({ engine, elo, temperature, books }:
     }
   }, [books, engine, elo, temperature, sync]);
 
+  const botMoveRef = useRef(botMove);
+  botMoveRef.current = botMove;
+
   const onDrop = useCallback((from: string, to: string) => {
     if (thinking) return false;
+    if (gameRef.current.turn() !== playerColor) return false;
     const g = gameRef.current;
     try {
       g.move({ from, to, promotion: "q" }); // chess.js v1 THROWS on an illegal move (doesn't return null)
@@ -108,7 +130,8 @@ export function BoardPanel({ engine, elo, temperature, books }:
     gameRef.current = new Chess();
     setLastMove(null);
     setFen(gameRef.current.fen());
-  }, [thinking]);
+    if (playerColor === "b") void botMoveRef.current();
+  }, [thinking, playerColor]);
 
   const copyMoves = useCallback(async () => {
     const pgn = gameRef.current.pgn();
@@ -145,6 +168,7 @@ export function BoardPanel({ engine, elo, temperature, books }:
           arePiecesDraggable={!thinking}
           customSquareStyles={customSquareStyles}
           boardWidth={480}
+          boardOrientation={boardOrientationOf(playerColor)}
         />
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap", minHeight: 24 }}>
           <button onClick={newGame} disabled={thinking}>New game</button>
