@@ -9,6 +9,7 @@ import { undoToHumanTurn } from "../undo";
 import { ThinkingPanel } from "./ThinkingPanel";
 import { botColorOf, boardOrientationOf, botShouldOpen } from "../playerColor";
 import { WDLBar, type WDL } from "./WDLBar";
+import { resolveClick } from "../clickMove";
 
 const MOVE_DELAY_MS = 650; // brief pause so the bot's reply is easy to follow
 
@@ -33,6 +34,7 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
   // The side-to-move the current `wdl` was computed for. Kept as a matched pair with `wdl`
   // so the bar never momentarily maps a stale value to the new turn's perspective.
   const [wdlStm, setWdlStm] = useState<"w" | "b">("w");
+  const [selected, setSelected] = useState<string | null>(null); // tap-to-move: the picked from-square
 
   // Push gameRef state into render state (fen + last-move label).
   const sync = useCallback(() => {
@@ -85,6 +87,9 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
     return () => { cancelled = true; };
   }, [engine, fen, elo, playerColor, botColor]);
 
+  // Any position change (move, bot reply, undo, new game, color switch) clears the tap selection.
+  useEffect(() => { setSelected(null); }, [fen]);
+
   // Picking a color starts a fresh game.
   useEffect(() => {
     gameRef.current = new Chess();
@@ -118,19 +123,35 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
   const botMoveRef = useRef(botMove);
   botMoveRef.current = botMove;
 
-  const onDrop = useCallback((from: string, to: string) => {
-    if (thinking) return false;
-    if (gameRef.current.turn() !== playerColor) return false;
+  // Apply a human move (shared by drag and tap-to-move). Returns false if it was illegal
+  // or not the human's turn, so the caller can reject the interaction.
+  const tryHumanMove = useCallback((from: string, to: string): boolean => {
     const g = gameRef.current;
+    if (thinking || g.isGameOver() || g.turn() !== playerColor) return false;
     try {
       g.move({ from, to, promotion: "q" }); // chess.js v1 THROWS on an illegal move (doesn't return null)
     } catch {
-      return false; // reject the drag; react-chessboard snaps the piece back
+      return false;
     }
     sync();
     void botMove();
     return true;
-  }, [thinking, botMove, sync]);
+  }, [thinking, playerColor, botMove, sync]);
+
+  const onDrop = useCallback((from: string, to: string) => tryHumanMove(from, to), [tryHumanMove]);
+
+  // Tap-to-move (mobile-friendly): tap a piece to select, tap a target to move.
+  const onSquareClick = useCallback((square: string) => {
+    const g = gameRef.current;
+    if (thinking || g.isGameOver() || g.turn() !== playerColor) return;
+    const r = resolveClick(g, selected, square, playerColor);
+    if (r.type === "select") setSelected(r.from);
+    else if (r.type === "deselect" || r.type === "ignore") setSelected(null);
+    else if (r.type === "move") {
+      // On success the [fen] effect clears the selection; on an illegal target, clear it here.
+      if (!tryHumanMove(r.from, r.to)) setSelected(null);
+    }
+  }, [thinking, playerColor, selected, tryHumanMove]);
 
   const undo = useCallback(() => {
     if (thinking) return;
@@ -171,6 +192,18 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
     customSquareStyles[lastMove.from] = { background: "rgba(255,213,79,0.6)" };
     customSquareStyles[lastMove.to] = { background: "rgba(255,213,79,0.6)" };
   }
+  // Tap-to-move: highlight the selected square + dots on its legal targets (rings for captures).
+  if (selected) {
+    customSquareStyles[selected] = { ...customSquareStyles[selected], background: "rgba(74,144,217,0.55)" };
+    for (const m of view.moves({ square: selected as any, verbose: true })) {
+      customSquareStyles[m.to] = {
+        ...customSquareStyles[m.to],
+        background: (m as any).captured
+          ? "radial-gradient(circle, transparent 58%, rgba(74,144,217,0.45) 60%)" // ring around a capturable piece
+          : "radial-gradient(circle, rgba(74,144,217,0.5) 22%, transparent 24%)",  // dot on an empty target
+      };
+    }
+  }
 
   return (
     <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
@@ -179,6 +212,7 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
         <Chessboard
           position={fen}
           onPieceDrop={onDrop}
+          onSquareClick={onSquareClick}
           arePiecesDraggable={!thinking}
           customSquareStyles={customSquareStyles}
           boardWidth={480}
