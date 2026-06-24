@@ -9,6 +9,7 @@ describe("engine self-play", () => {
   it("plays only legal moves and terminates", async () => {
     const eng = await Engine.load(ort as any, {
       encode: "public/encode_int8.onnx", fromHead: "public/from_head_int8.onnx", toHead: "public/to_head_int8.onnx",
+      valueHead: "public/value_head_int8.onnx",
     }, { nEloBuckets: fixtures.n_elo_buckets });
     const board = new Chess();
     const rand = mulberry32(7);
