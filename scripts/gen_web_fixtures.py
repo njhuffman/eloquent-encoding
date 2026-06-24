@@ -30,17 +30,19 @@ def build_cases(checkpoint_path: str, fens: list[str], elo: int) -> dict:
         board = chess.Board(fen)
         bt = packed_to_board_tensor(board_to_packed(board)).float()
         with torch.no_grad():
-            _, sq = policy.encoder(bt)
+            cls, sq = policy.encoder(bt)
             fl = policy.from_head(sq, elo_idx=torch.tensor([bucket]))[0]
             from_sq = int(fl.masked_fill(~torch.tensor(_bits(legal_from_u64(board))), float("-inf")).argmax())
             tl = policy.to_head(sq, torch.tensor([from_sq]), elo_idx=torch.tensor([bucket]))[0]
             to_legal = _bits(legal_to_u64(board, from_sq))
             to_sq = int(tl.masked_fill(~torch.tensor(to_legal), float("-inf")).argmax())
+            value_logits = policy.value_head(cls, elo_idx=torch.tensor([bucket]))[0]
         cases.append({
             "fen": fen, "elo": elo, "bucket": bucket,
             "board_tensor": bt.reshape(-1).tolist(),
             "from_logits": fl.tolist(), "legal_from": _bits(legal_from_u64(board)),
             "to_from_sq": from_sq, "to_logits": tl.tolist(), "legal_to": to_legal,
+            "value_logits": value_logits.tolist(),
             "top_move_uci": chess.Move(from_sq, to_sq).uci(),
         })
     return {"d_model": int(ck["architecture"]["d_model"]), "n_elo_buckets": n, "cases": cases}

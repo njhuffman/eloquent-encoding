@@ -36,6 +36,7 @@ from style_policy.model import BasePolicy
 from style_policy.model_spec import elo_to_bucket
 
 CKPT = "style_policy_checkpoints/base_64M/base_64M_stage_1.pt"
+WDL_CKPT = "style_policy_checkpoints/wdl_16M/wdl_16M_stage_1.pt"
 FENS = [chess.STARTING_FEN,
         "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
         "8/8/8/4k3/8/4K3/4P3/8 w - - 0 1"]
@@ -84,11 +85,12 @@ def test_int8_parity_top1(tmp_path):
 
 def test_fixtures_written(tmp_path, monkeypatch):
     from scripts.gen_web_fixtures import build_cases
-    cases = build_cases(CKPT, FENS, elo=1500)
+    cases = build_cases(WDL_CKPT, FENS, elo=1500)
     assert len(cases["cases"]) == len(FENS)
     c = cases["cases"][0]
     assert len(c["board_tensor"]) == 8 * 8 * 18
     assert len(c["from_logits"]) == 64 and len(c["legal_from"]) == 64
+    assert len(c["value_logits"]) == 3
     assert c["bucket"] == 15
 
 
