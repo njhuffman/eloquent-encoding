@@ -30,6 +30,9 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
   const [botAnalysis, setBotAnalysis] = useState<BotAnalysis | null>(null); // bot's choice at its last move
   const [copied, setCopied] = useState(false);
   const [wdl, setWdl] = useState<WDL | null>(null);
+  // The side-to-move the current `wdl` was computed for. Kept as a matched pair with `wdl`
+  // so the bar never momentarily maps a stale value to the new turn's perspective.
+  const [wdlStm, setWdlStm] = useState<"w" | "b">("w");
 
   // Push gameRef state into render state (fen + last-move label).
   const sync = useCallback(() => {
@@ -70,10 +73,13 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
       } else if (!cancelled) {
         setBotAnalysis(null);
       }
-      // WDL bar (side-to-move perspective; conditioned on the elo slider)
+      // WDL bar (side-to-move perspective; conditioned on the elo slider). Capture the
+      // side-to-move now and commit it together with the value, so the bar's perspective
+      // always matches the value it's displaying (no stale-perspective flash on a new move).
+      const stm = g.turn();
       try {
         const v = await engine.value(new Chess(g.fen()), elo);
-        if (!cancelled) setWdl(v);
+        if (!cancelled) { setWdl(v); setWdlStm(stm); }
       } catch { if (!cancelled) setWdl(null); }
     })().catch(() => {});
     return () => { cancelled = true; };
@@ -168,7 +174,7 @@ export function BoardPanel({ engine, elo, temperature, books, playerColor }:
 
   return (
     <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-      <WDLBar wdl={wdl} sideToMove={view.turn()} playerColor={playerColor} height={480} />
+      <WDLBar wdl={wdl} sideToMove={wdlStm} playerColor={playerColor} height={480} />
       <div style={{ width: 480 }}>
         <Chessboard
           position={fen}
