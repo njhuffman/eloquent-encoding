@@ -42,7 +42,7 @@ const fakeOrt = {
 
 describe("Engine ORT-run serialization", () => {
   it("serializes runs so concurrent chooseMove + topMoves(distributions) don't trip the single-run guard", async () => {
-    const eng = await Engine.load(fakeOrt as any, { encode: "e", fromHead: "f", toHead: "t" }, { nEloBuckets: 40 });
+    const eng = await Engine.load(fakeOrt as any, { encode: "e", fromHead: "f", toHead: "t", valueHead: "v" }, { nEloBuckets: 40 });
     const board = new Chess();
     // Fire both concurrently — exactly what dropping a piece does (botMove + the panel effect).
     // Without serialization the second run starts while the first is mid-flight → "Session mismatch".
