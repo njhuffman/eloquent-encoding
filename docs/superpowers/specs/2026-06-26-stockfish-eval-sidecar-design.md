@@ -110,7 +110,8 @@ later); deeper analyses comparing it to the model (separate, downstream).
   continue (don't crash the batch). Confirm `UCI_ShowWDL` populates it in the integration test.
 - **Static-eval parsing drift**: pin the parse to the `NNUE evaluation … (white side)` line; the
   integration test guards the format against SF version changes.
-- **Engine process leaks**: `atexit` quit/terminate in workers; the script also `pkill`s stray engines on
-  exit. (Keep worker count ≤8 so the box stays usable.)
+- **Engine process leaks**: each worker registers an `atexit` cleanup that quits its engines; if a worker
+  is killed (so `atexit` can't run), its Stockfish children still exit on stdin-EOF — no orphans by
+  design. (Keep worker count ≤8 so the box stays usable.)
 - **Alignment**: `row_index` + the source-match check on resume prevent a sidecar being joined to the
   wrong file/order.
