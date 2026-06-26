@@ -74,3 +74,29 @@ def test_sidecar_rejects_attr_mismatch(tmp_path):
         assert False, "expected attr mismatch error"
     except ValueError:
         pass
+
+import os, pytest, chess, chess.engine
+from dataset_generation.stockfish_eval import StaticEvalEngine, eval_position
+
+SF = "/usr/games/stockfish"
+
+@pytest.mark.skipif(not os.path.exists(SF), reason="stockfish not installed")
+def test_eval_position_integration():
+    se = chess.engine.SimpleEngine.popen_uci(SF)
+    se.configure({"Threads": 1, "Hash": 16, "UCI_ShowWDL": True})
+    st = StaticEvalEngine(SF)
+    try:
+        # normal midgame: defined static eval, finite cp, wdl ~ permille
+        r = eval_position(se, st, chess.Board(
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"), 8)
+        assert -32000 <= r["cp"] <= 32000 and r["mate"] == 0
+        assert r["static_cp"] != STATIC_NA
+        assert abs(sum(r["wdl"]) - 1000) <= 2
+        # white to move, mate in 1 (back-rank Re8#): positive STM mate
+        r2 = eval_position(se, st, chess.Board("6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1"), 8)
+        assert r2["mate"] > 0
+        # side to move in check: static eval undefined -> sentinel
+        r3 = eval_position(se, st, chess.Board("4k3/8/4R3/8/8/8/8/4K3 b - - 0 1"), 8)
+        assert r3["static_cp"] == STATIC_NA
+    finally:
+        se.quit(); st.close()

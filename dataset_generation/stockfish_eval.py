@@ -5,8 +5,10 @@ All evals are from the side-to-move's perspective (matching the dataset `result`
 from __future__ import annotations
 import os
 import re
+import subprocess
 import numpy as np
 import h5py
+import chess
 
 CP_CLAMP = 32000        # centipawn clamp; a forced mate is stored as ±CP_CLAMP in the cp column
 _MISSING = object()
@@ -86,3 +88,60 @@ def write_records(f: h5py.File, positions, records) -> None:
         f["sf_wdl"][pos] = rec["wdl"]
         f["done"][pos] = True
     f.flush()
+
+
+class StaticEvalEngine:
+    """A raw Stockfish process used only for the static `eval` command (python-chess lacks it)."""
+    def __init__(self, sf_path: str):
+        self.p = subprocess.Popen([sf_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  text=True, bufsize=1)
+        self._send("uci")
+        for line in self.p.stdout:           # drain until uciok
+            if line.strip() == "uciok":
+                break
+
+    def _send(self, cmd: str) -> None:
+        self.p.stdin.write(cmd + "\n")
+        self.p.stdin.flush()
+
+    def eval_cp(self, fen: str) -> int | None:
+        self._send(f"position fen {fen}")
+        self._send("eval")
+        self._send("isready")   # sentinel: drain until readyok so no lines bleed into next call
+        result = None
+        for line in self.p.stdout:
+            s = line.strip()
+            if result is None and (s.startswith("NNUE evaluation") or s.startswith("Final evaluation")):
+                result = parse_static_eval(s)   # cp (white-relative) or None (in check)
+            if s == "readyok":
+                break
+        return result
+
+    def close(self) -> None:
+        try:
+            self._send("quit")
+            self.p.wait(timeout=2)
+        except Exception:
+            self.p.kill()
+
+
+def eval_position(simple_engine, static_engine: StaticEvalEngine, board, depth: int) -> dict:
+    """STM-relative record: {cp, mate, static_cp, wdl=[loss,draw,win]}. Terminal board -> sentinels."""
+    import chess.engine
+    if board.is_game_over():
+        return {"cp": 0, "mate": 0, "static_cp": STATIC_NA, "wdl": (0, 0, 0)}
+    info = simple_engine.analyse(board, chess.engine.Limit(depth=depth))
+    cp, mate = score_to_cp_mate(info["score"].pov(board.turn))
+    wdl_info = info.get("wdl")
+    if wdl_info is not None:
+        w = wdl_info.pov(board.turn)          # Wdl(wins, draws, losses), permille
+        wdl = (int(w.losses), int(w.draws), int(w.wins))   # [loss, draw, win]
+    else:
+        wdl = (0, 0, 0)
+    white_cp = static_engine.eval_cp(board.fen())          # white-relative, or None (in check)
+    if white_cp is None:
+        static_cp = STATIC_NA
+    else:
+        stm_cp = white_cp if board.turn == chess.WHITE else -white_cp
+        static_cp = clamp_cp(stm_cp)
+    return {"cp": cp, "mate": mate, "static_cp": static_cp, "wdl": wdl}
