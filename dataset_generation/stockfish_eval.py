@@ -9,6 +9,7 @@ import numpy as np
 import h5py
 
 CP_CLAMP = 32000        # centipawn clamp; a forced mate is stored as ±CP_CLAMP in the cp column
+_MISSING = object()
 STATIC_NA = -32768      # sentinel: static eval undefined (e.g. side to move is in check)
 
 _EVAL_RE = re.compile(r"(?:NNUE|Final) evaluation:?\s+([+-]?\d+\.\d+)")
@@ -55,9 +56,10 @@ def open_or_create_sidecar(path: str, row_index: np.ndarray, attrs: dict) -> h5p
             f.close()
             raise ValueError("sidecar row_index mismatch — different file/sample/seed; refusing to resume")
         for k in _MATCH_ATTRS:
-            if str(f.attrs.get(k)) != str(attrs[k]):
+            cur = f.attrs.get(k, _MISSING)
+            if cur is _MISSING or cur != attrs[k]:
                 f.close()
-                raise ValueError(f"sidecar attr {k} mismatch ({f.attrs.get(k)} != {attrs[k]})")
+                raise ValueError(f"sidecar attr {k} mismatch ({cur!r} != {attrs[k]!r})")
         return f
     f = h5py.File(path, "w")
     f.create_dataset("row_index", data=row_index.astype(np.int64))

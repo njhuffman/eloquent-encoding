@@ -62,3 +62,15 @@ def test_sidecar_rejects_mismatch(tmp_path):
         assert False, "expected mismatch error"
     except ValueError:
         pass
+
+def test_sidecar_rejects_attr_mismatch(tmp_path):
+    import numpy as np
+    p = str(tmp_path / "sc.h5")
+    rows = np.arange(6, dtype=np.int64)
+    open_or_create_sidecar(p, rows, _attrs()).close()
+    bad = _attrs(); bad["depth"] = 12  # same rows, different depth
+    try:
+        open_or_create_sidecar(p, rows, bad)
+        assert False, "expected attr mismatch error"
+    except ValueError:
+        pass
