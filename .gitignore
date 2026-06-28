@@ -49,3 +49,4 @@ htmlcov/
 wandb/
 .superpowers/
 maia2_models/
+.rate_*.json
