@@ -13,6 +13,7 @@ architecture:
   elo_dim: 8
   n_elo_buckets: 40
 defaults:
+  compile: false   # skip torch.compile warmup for fast smoke/CI runs
   batch_size: 64
   dataloader_num_workers: 0
   use_amp: true
