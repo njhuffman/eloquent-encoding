@@ -43,7 +43,7 @@ class PolicyBot(Player):
         self.n_elo = int(ck["architecture"]["n_elo_buckets"])
         self.elo = int(elo)
         self.temperature = float(temperature)
-        self.gen = torch.Generator().manual_seed(seed if seed is not None else 0)
+        self.gen = torch.Generator(device=device).manual_seed(seed if seed is not None else 0)
         self._elo_idx = elo_to_bucket(torch.tensor([self.elo]), self.n_elo).to(device)
         self.opening_book = opening_book
         self.book_threshold = float(book_threshold)
