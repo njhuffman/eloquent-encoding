@@ -110,12 +110,17 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
     ckpt_dir = Path(spec["checkpoint_dir"]); (ckpt_dir / "metrics").mkdir(parents=True, exist_ok=True)
     use_amp = bool(stage["use_amp"])
     amp_dtype = _resolve_amp_dtype(str(stage.get("amp_dtype", "bf16")))
+    if device == "cuda":
+        torch.set_float32_matmul_precision("high")  # allow TF32 on any residual fp32 matmuls
 
     model = BasePolicy.from_config(arch).to(device)
     if stage_idx > 1:
         prev = ckpt_dir / f"{name}_stage_{stage_idx-1}.pt"
         model.load_state_dict(torch.load(prev, map_location=device)["model"])
-    opt = torch.optim.AdamW(model.parameters(), lr=stage["train"]["learning_rate"], weight_decay=stage["weight_decay"])
+    # fused AdamW collapses the many per-param kernels into one (worth it for small models with
+    # many tensors); requires all params on CUDA.
+    opt = torch.optim.AdamW(model.parameters(), lr=stage["train"]["learning_rate"],
+                            weight_decay=stage["weight_decay"], fused=(device == "cuda"))
     # GradScaler is only needed/valid for fp16; bf16 has fp32 range and must NOT be scaled.
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device == "cuda" and amp_dtype == torch.float16)
     accum = int(stage.get("gradient_accumulation_steps", 1))
@@ -157,12 +162,26 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
             sched.load_state_dict(st["scheduler"])
         print(f"Resumed from {resume_path} at step {global_step}/{total_steps} (best_val={best_val:.4f})")
 
+    # Compile AFTER all weight-loading. torch.compile wraps encoder in an OptimizedModule whose
+    # state_dict prefixes keys with `encoder._orig_mod.`; _model_sd() strips that so checkpoints
+    # stay loadable by the plain BasePolicy (rate_bot, diagonal_check, onnx_export, etc.).
+    do_compile = bool(stage.get("compile", True)) and device == "cuda"
+    if do_compile:
+        model.encoder = torch.compile(model.encoder)
+
+    def _model_sd():
+        sd = model.state_dict()
+        if do_compile:
+            sd = {k.replace("encoder._orig_mod.", "encoder.", 1): v for k, v in sd.items()}
+        return sd
+
     def _save_resume():
-        torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "scaler": scaler.state_dict(),
+        torch.save({"model": _model_sd(), "optimizer": opt.state_dict(), "scaler": scaler.state_dict(),
                     "scheduler": sched.state_dict() if sched is not None else None,
                     "global_step": global_step, "best_val": best_val, "architecture": arch}, resume_path)
 
-    print(f"amp={'on' if use_amp else 'off'} dtype={amp_dtype} grad_scaler={'on' if scaler.is_enabled() else 'off'}")
+    print(f"amp={'on' if use_amp else 'off'} dtype={amp_dtype} grad_scaler={'on' if scaler.is_enabled() else 'off'} "
+          f"compile={'on' if do_compile else 'off'} fused_adamw={device == 'cuda'}")
     run = _init_wandb(spec, stage_idx, stage, device)
     model.train(); opt.zero_grad()
     pending = False          # grads accumulated since the last optimizer step
@@ -214,7 +233,7 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
                     run.log({**vm, "val/loss": vloss}, step=global_step)
                 if vloss < best_val:
                     best_val = vloss
-                    torch.save({"model": model.state_dict(), "architecture": arch,
+                    torch.save({"model": _model_sd(), "architecture": arch,
                                 "best_val": best_val, "global_step": global_step},
                                ckpt_dir / f"{name}_stage_{stage_idx}.best.pt")
 
@@ -241,12 +260,12 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
             run.log({**final_val, "val/loss": vloss}, step=global_step)
         if vloss < best_val:
             best_val = vloss
-            torch.save({"model": model.state_dict(), "architecture": arch,
+            torch.save({"model": _model_sd(), "architecture": arch,
                         "best_val": best_val, "global_step": global_step},
                        ckpt_dir / f"{name}_stage_{stage_idx}.best.pt")
 
     out = ckpt_dir / f"{name}_stage_{stage_idx}.pt"
-    torch.save({"model": model.state_dict(), "architecture": arch}, out)
+    torch.save({"model": _model_sd(), "architecture": arch}, out)
     _save_resume()
     rec = {"stage": stage_idx, "steps": global_step, "best_val": best_val,
            "last_train_metrics": m, "final_val_metrics": final_val}
