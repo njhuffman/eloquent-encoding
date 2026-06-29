@@ -34,25 +34,28 @@ def test_train_band_head_smoke(tmp_path):
 
 
 def test_eval_row_metric_on_forced_moves(tmp_path):
-    import numpy as np, h5py, torch
+    import numpy as np, h5py, torch, chess
     from style_policy.model import BasePolicy
     from style_policy.band_head import BandHead, eval_band_head_row
-    from style_policy.packed_codec import PACKED_BOARD_LEN
+    from style_policy.board_encode import board_to_packed
     arch = {"d_model": 32, "n_layers": 1, "nhead": 4, "dim_feedforward": 64,
             "dropout": 0.0, "head_hidden": 32, "elo_dim": 8, "n_elo_buckets": 40}
     m = BasePolicy.from_config(arch); ckpt = tmp_path / "enc.pt"
     torch.save({"model": m.state_dict(), "architecture": arch}, ckpt)
-    # one legal from-square and one legal to-square == the human move => any head scores 100%
-    n = 8; vp = tmp_path / "val.h5"
-    packed = np.zeros((n, PACKED_BOARD_LEN), np.uint8); packed[:, 33] = 255
+    # A real position whose ONLY legal move is Kh8-g7. The eval derives legality from the
+    # reconstructed board (legal_from / legal_to of the PREDICTED from-square), so with a single
+    # legal move both the band head and the shared head must pick it -> 100% regardless of weights.
+    # K+B+N vs K (sufficient material, so not "game over"); g8 attacked by Ba2, h7 by Nf8, h8 safe.
+    board = chess.Board("5N1k/8/8/8/8/8/B7/K7 b - - 0 1")
+    assert not board.is_game_over()
+    assert [mv.uci() for mv in board.legal_moves] == ["h8g7"]  # guards the single-legal-move property
+    row = np.asarray(board_to_packed(board), np.uint8)
+    n = 4; vp = tmp_path / "val.h5"
     with h5py.File(vp, "w") as f:
-        f["packed_pre"] = packed
+        f["packed_pre"] = np.tile(row, (n, 1))
         f["elo_to_move"] = np.full(n, 1900, np.int16)
-        f["from_sq"] = np.full(n, 12, np.uint8); f["to_sq"] = np.full(n, 28, np.uint8)
-        f["from_legal_u64"] = np.full(n, np.uint64(1) << np.uint64(12), np.uint64)
-        f["to_legal_u64"] = np.full(n, np.uint64(1) << np.uint64(28), np.uint64)
-        f["promotion"] = np.zeros(n, np.uint8); f["opp_elo"] = np.full(n, 1500, np.int16)
-        f["result"] = np.ones(n, np.int8)
+        f["from_sq"] = np.full(n, chess.H8, np.uint8)   # 63
+        f["to_sq"] = np.full(n, chess.G7, np.uint8)     # 54
     head = BandHead(32, 32)
     rows = eval_band_head_row(str(ckpt), head, str(vp), [1900], device="cpu", n=n)
     assert rows[1900]["count"] == n

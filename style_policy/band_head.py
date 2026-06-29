@@ -81,23 +81,25 @@ def eval_band_head_row(checkpoint, band_head, val_h5, bands, *, device="cuda", n
     with h5py.File(val_h5, "r") as f:
         m = min(n, f["packed_pre"].shape[0])
         packed = f["packed_pre"][:m]; hf = f["from_sq"][:m]; ht = f["to_sq"][:m]; elo = f["elo_to_move"][:m]
-        flegal = f["from_legal_u64"][:m]; tlegal = f["to_legal_u64"][:m]
     out = {b: {"spec": 0, "shared": 0, "count": 0} for b in bands}
     for i in range(m):
         b = int(min(max(bands), max(min(bands), (int(elo[i]) // 100) * 100)))
         if b not in out:
             continue
+        board = packed_to_board(np.asarray(packed[i], np.uint8))
+        if board.is_game_over():
+            continue
         out[b]["count"] += 1
         pk = torch.from_numpy(np.asarray(packed[i], np.uint8)[None]).to(device)
         _, squares = model.encode(pk)
-        fmask = _mask1(int(flegal[i]), device)
+        fmask = _mask1(legal_from_u64(board), device)
         bi = elo_to_bucket(torch.tensor([b]), n_elo).to(device)
         for tag, ffn, tfn in (
             ("spec", lambda s: band_head.from_logits(s), lambda s, pf: band_head.to_logits(s, pf)),
             ("shared", lambda s: model.from_head(s, elo_idx=bi), lambda s, pf: model.to_head(s, pf, elo_idx=bi)),
         ):
             pf = int(ffn(squares).masked_fill(~fmask, _NEG).argmax())
-            tmask = _mask1(int(tlegal[i]), device)
+            tmask = _mask1(legal_to_u64(board, pf), device)
             pft = torch.tensor([pf], device=device)
             pt = int(tfn(squares, pft).masked_fill(~tmask, _NEG).argmax())
             if pf == int(hf[i]) and pt == int(ht[i]):
