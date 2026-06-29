@@ -3,11 +3,15 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import numpy as np
+import h5py
 from style_policy.policy_heads import FromHead, ToHead
 from style_policy.model import BasePolicy
 from style_policy.dataset import PackedMoveDataset
 from style_policy.loss import masked_square_ce
 from style_policy.legal_mask import u64_to_mask
+from style_policy.board_encode import packed_to_board, legal_from_u64, legal_to_u64
+from style_policy.model_spec import elo_to_bucket
 
 class BandHead(nn.Module):
     def __init__(self, d_model: int, hidden: int):
@@ -60,3 +64,44 @@ def train_band_head(checkpoint, band, train_h5, *, device="cuda", steps=2000,
     if out is not None:
         torch.save({"band_head": head.state_dict(), **meta}, out)
     return head, meta
+
+
+_NEG = float("-inf")
+
+def _mask1(u64, dev):
+    return u64_to_mask(torch.from_numpy(np.array([u64], dtype=np.uint64)).to(torch.int64)).to(dev)
+
+@torch.no_grad()
+def eval_band_head_row(checkpoint, band_head, val_h5, bands, *, device="cuda", n=10000):
+    ck = torch.load(checkpoint, map_location=device)
+    arch = ck["architecture"]; n_elo = int(arch["n_elo_buckets"])
+    model = BasePolicy.from_config(arch); model.load_state_dict(ck["model"])
+    model.to(device).eval()
+    band_head = band_head.to(device).eval()
+    with h5py.File(val_h5, "r") as f:
+        m = min(n, f["packed_pre"].shape[0])
+        packed = f["packed_pre"][:m]; hf = f["from_sq"][:m]; ht = f["to_sq"][:m]; elo = f["elo_to_move"][:m]
+        flegal = f["from_legal_u64"][:m]; tlegal = f["to_legal_u64"][:m]
+    out = {b: {"spec": 0, "shared": 0, "count": 0} for b in bands}
+    for i in range(m):
+        b = int(min(max(bands), max(min(bands), (int(elo[i]) // 100) * 100)))
+        if b not in out:
+            continue
+        out[b]["count"] += 1
+        pk = torch.from_numpy(np.asarray(packed[i], np.uint8)[None]).to(device)
+        _, squares = model.encode(pk)
+        fmask = _mask1(int(flegal[i]), device)
+        bi = elo_to_bucket(torch.tensor([b]), n_elo).to(device)
+        for tag, ffn, tfn in (
+            ("spec", lambda s: band_head.from_logits(s), lambda s, pf: band_head.to_logits(s, pf)),
+            ("shared", lambda s: model.from_head(s, elo_idx=bi), lambda s, pf: model.to_head(s, pf, elo_idx=bi)),
+        ):
+            pf = int(ffn(squares).masked_fill(~fmask, _NEG).argmax())
+            tmask = _mask1(int(tlegal[i]), device)
+            pft = torch.tensor([pf], device=device)
+            pt = int(tfn(squares, pft).masked_fill(~tmask, _NEG).argmax())
+            if pf == int(hf[i]) and pt == int(ht[i]):
+                out[b][tag] += 1
+    return {b: {"spec": 100.0 * v["spec"] / v["count"] if v["count"] else 0.0,
+                "shared": 100.0 * v["shared"] / v["count"] if v["count"] else 0.0,
+                "count": v["count"]} for b, v in out.items()}

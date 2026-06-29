@@ -31,3 +31,29 @@ def test_train_band_head_smoke(tmp_path):
     assert meta["band"] == 1900 and meta["d_model"] == 32
     loaded = BandHead(meta["d_model"], meta["hidden"])
     loaded.load_state_dict(torch.load(out)["band_head"])  # clean load
+
+
+def test_eval_row_metric_on_forced_moves(tmp_path):
+    import numpy as np, h5py, torch
+    from style_policy.model import BasePolicy
+    from style_policy.band_head import BandHead, eval_band_head_row
+    from style_policy.packed_codec import PACKED_BOARD_LEN
+    arch = {"d_model": 32, "n_layers": 1, "nhead": 4, "dim_feedforward": 64,
+            "dropout": 0.0, "head_hidden": 32, "elo_dim": 8, "n_elo_buckets": 40}
+    m = BasePolicy.from_config(arch); ckpt = tmp_path / "enc.pt"
+    torch.save({"model": m.state_dict(), "architecture": arch}, ckpt)
+    # one legal from-square and one legal to-square == the human move => any head scores 100%
+    n = 8; vp = tmp_path / "val.h5"
+    packed = np.zeros((n, PACKED_BOARD_LEN), np.uint8); packed[:, 33] = 255
+    with h5py.File(vp, "w") as f:
+        f["packed_pre"] = packed
+        f["elo_to_move"] = np.full(n, 1900, np.int16)
+        f["from_sq"] = np.full(n, 12, np.uint8); f["to_sq"] = np.full(n, 28, np.uint8)
+        f["from_legal_u64"] = np.full(n, np.uint64(1) << np.uint64(12), np.uint64)
+        f["to_legal_u64"] = np.full(n, np.uint64(1) << np.uint64(28), np.uint64)
+        f["promotion"] = np.zeros(n, np.uint8); f["opp_elo"] = np.full(n, 1500, np.int16)
+        f["result"] = np.ones(n, np.int8)
+    head = BandHead(32, 32)
+    rows = eval_band_head_row(str(ckpt), head, str(vp), [1900], device="cpu", n=n)
+    assert rows[1900]["count"] == n
+    assert rows[1900]["spec"] == 100.0 and rows[1900]["shared"] == 100.0
