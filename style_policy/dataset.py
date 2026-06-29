@@ -10,15 +10,20 @@ _FIELDS_U8 = ("from_sq", "to_sq", "promotion")
 
 
 class PackedMoveDataset(Dataset):
-    def __init__(self, h5_path: str | Path, *, sample_n: int | None = None, seed: int = 0):
+    def __init__(self, h5_path: str | Path, *, sample_n: int | None = None, seed: int = 0, band: tuple[int, int] | None = None):
         self.path = str(h5_path)
         with h5py.File(self.path, "r") as f:
             n = int(f["packed_pre"].shape[0])
-        if sample_n is not None and sample_n < n:
+            if band is not None:
+                elo = f["elo_to_move"][:]
+                pool = np.nonzero((elo >= band[0]) & (elo < band[1]))[0]
+            else:
+                pool = np.arange(n)
+        if sample_n is not None and sample_n < len(pool):
             rng = np.random.default_rng(seed)
-            self.indices = np.sort(rng.choice(n, size=sample_n, replace=False))
+            self.indices = np.sort(rng.choice(pool, size=sample_n, replace=False))
         else:
-            self.indices = np.arange(n)
+            self.indices = pool  # nonzero()/arange() are already ascending
         self._f: h5py.File | None = None
 
     def _file(self) -> h5py.File:
