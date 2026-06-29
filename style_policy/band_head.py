@@ -10,8 +10,11 @@ from style_policy.model import BasePolicy
 from style_policy.dataset import PackedMoveDataset
 from style_policy.loss import masked_square_ce
 from style_policy.legal_mask import u64_to_mask
-from style_policy.board_encode import packed_to_board, legal_from_u64, legal_to_u64
+from style_policy.board_encode import packed_to_board, board_to_packed, legal_from_u64, legal_to_u64
 from style_policy.model_spec import elo_to_bucket
+from style_policy.play import Player
+import random
+import chess
 
 class BandHead(nn.Module):
     def __init__(self, d_model: int, hidden: int):
@@ -109,3 +112,53 @@ def eval_band_head_row(checkpoint, band_head, val_h5, bands, *, device="cuda", n
     return {b: {"spec": 100.0 * v["spec"] / v["count"] if v["count"] else 0.0,
                 "shared": 100.0 * v["shared"] / v["count"] if v["count"] else 0.0,
                 "count": v["count"]} for b, v in out.items()}
+
+
+class BandHeadBot(Player):
+    """Plays by sampling from a dedicated per-band head on a frozen encoder (no elo conditioning).
+
+    temperature < 1 sharpens toward the argmax (stronger); == 1 samples the head's learned
+    band move distribution faithfully. Mirrors PolicyBot's sampling/book/promotion handling so
+    it slots into the same rate_bot / Maia2 harness.
+    """
+
+    def __init__(self, head_path, *, checkpoint=None, device="cpu", temperature=1.0,
+                 seed=None, opening_book=None, book_threshold=0.01):
+        st = torch.load(head_path, map_location=device)
+        ck = torch.load(checkpoint or st["source_checkpoint"], map_location=device)
+        self.model = BasePolicy.from_config(ck["architecture"]).to(device)
+        self.model.load_state_dict(ck["model"], strict=False)  # policy-only encoder lacks value head
+        self.model.eval()
+        self.head = BandHead(int(st["d_model"]), int(st["hidden"])).to(device)
+        self.head.load_state_dict(st["band_head"])
+        self.head.eval()
+        self.band = int(st["band"])
+        self.device = device
+        self.temperature = float(temperature)
+        self.gen = torch.Generator(device=device).manual_seed(seed if seed is not None else 0)
+        self.opening_book = opening_book
+        self.book_threshold = float(book_threshold)
+        self._book_rng = random.Random(seed if seed is not None else 0)
+
+    def _sample(self, logits: torch.Tensor, legal_u64: int) -> int:
+        u = torch.from_numpy(np.array([legal_u64], dtype=np.uint64)).to(torch.int64)
+        mask = u64_to_mask(u).to(logits.device)
+        logits = logits.masked_fill(~mask, _NEG) / self.temperature
+        probs = torch.softmax(logits, dim=-1)
+        return int(torch.multinomial(probs[0], 1, generator=self.gen).item())
+
+    @torch.no_grad()
+    def choose_move(self, board: chess.Board) -> chess.Move:
+        if self.opening_book is not None:
+            mv = self.opening_book.lookup(board, self.book_threshold, self._book_rng)
+            if mv is not None:
+                return mv
+        pk = torch.from_numpy(board_to_packed(board)[None]).to(self.device)
+        _, squares = self.model.encode(pk)
+        from_sq = self._sample(self.head.from_logits(squares), legal_from_u64(board))
+        to_logits = self.head.to_logits(squares, torch.tensor([from_sq], device=self.device))
+        to_sq = self._sample(to_logits, legal_to_u64(board, from_sq))
+        mv = chess.Move(from_sq, to_sq)
+        if mv not in board.legal_moves:                       # promotion: default to queen
+            mv = chess.Move(from_sq, to_sq, promotion=chess.QUEEN)
+        return mv
