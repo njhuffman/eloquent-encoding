@@ -12,6 +12,17 @@ from style_policy.legal_mask import u64_to_mask
 from style_policy.model_spec import elo_to_bucket
 
 
+def _init_wandb(spec, stage, device):
+    """Start a W&B run if spec has a 'wandb' block, else None (mirrors training_loop._init_wandb)."""
+    cfg = spec.get("wandb")
+    if not cfg:
+        return None
+    import wandb
+    return wandb.init(project=cfg.get("project", "style_policy"), entity=cfg.get("entity"),
+                      name=spec["name"], mode=cfg.get("mode", "online"),
+                      config={"device": device, "architecture": spec["architecture"], **stage})
+
+
 def _routed_policy_loss(model, squares, hidx, from_sq, to_sq, fmask, tmask, ls):
     B = squares.shape[0]
     fl = squares.new_zeros(()); tl = squares.new_zeros(())
@@ -111,6 +122,7 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
     ls = stage.get("label_smoothing", 0.0); vlw = stage.get("value_loss_weight", 1.0)
     val_interval = int(stage.get("val_interval", 0)); ckpt_interval = int(stage.get("checkpoint_interval", 0))
     print(f"multiband train: {name} steps={total_steps} compile={'on' if do_compile else 'off'}")
+    run = _init_wandb(spec, stage, device)
     model.train(); model.encoder  # noqa
     while step < total_steps:
         for batch in dl:
@@ -127,10 +139,15 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
                 sched.step()
             if step % stage["log_interval"] == 0:
                 print(f"step={step}/{total_steps} from_ce={m['from_ce']:.3f} to_ce={m['to_ce']:.3f} wdl={m['wdl_ce']:.3f}", flush=True)
+                if run is not None:
+                    run.log({"train/from_ce": m["from_ce"], "train/to_ce": m["to_ce"],
+                             "train/wdl_ce": m["wdl_ce"], "lr": opt.param_groups[0]["lr"]}, step=step)
             if val_dl is not None and val_interval and step > 0 and step % val_interval == 0:
                 v = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw)
                 print(f"  [val step={step}] from+to_ce={v:.4f}", flush=True)
                 best = min(best, v)
+                if run is not None:
+                    run.log({"val/from_to_ce": v}, step=step)
             if ckpt_interval and step > 0 and step % ckpt_interval == 0:
                 torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "step": step,
                             "best": best, "scheduler": sched.state_dict() if sched else None}, resume_path)
@@ -138,4 +155,6 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
     final_val = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw) if val_dl else float("nan")
     _export(model, arch, ckpt_dir, name, do_compile)
     print(f"saved {ckpt_dir}/{name}.pt + encoder + per-band heads; final_val={final_val:.4f}")
+    if run is not None:
+        run.finish()
     return {"steps": step, "final_val": final_val}

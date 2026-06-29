@@ -3,6 +3,9 @@ checkpoint_dir: style_policy_checkpoints/multiband_16M
 train_h5: /mnt/eloquence_bulk/databases/wdl_training_16M.h5
 val_h5: /mnt/eloquence_bulk/databases/wdl_validation_1M.h5
 val_sample: {n: 10000, seed: 42}
+wandb:
+  project: style_policy
+  mode: online
 architecture:
   d_model: 256
   n_layers: 8
