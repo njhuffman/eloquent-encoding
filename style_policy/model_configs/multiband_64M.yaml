@@ -1,0 +1,36 @@
+name: multiband_64M
+checkpoint_dir: style_policy_checkpoints/multiband_64M
+train_h5: /mnt/eloquence_bulk/databases/wdl_training_64M.h5
+val_h5: /mnt/eloquence_bulk/databases/wdl_validation_1M.h5
+val_sample: {n: 10000, seed: 42}
+wandb:
+  project: style_policy
+  mode: online
+architecture:
+  d_model: 256
+  n_layers: 8
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  head_hidden: 512
+  elo_dim: 32
+  n_elo_buckets: 40
+defaults:
+  batch_size: 256
+  dataloader_num_workers: 4
+  use_amp: true
+  amp_dtype: bf16
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 50
+  val_interval: 2000
+  checkpoint_interval: 2000
+  lr_schedule: cosine
+  warmup_steps: 2000
+  lr_min_frac: 0.0
+  seed: 0
+  value_loss_weight: 1.0
+stages:
+  - sample: {n: 64000000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0002}
+    label_smoothing: 0.1
