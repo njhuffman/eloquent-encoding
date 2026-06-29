@@ -22,7 +22,9 @@ def test_train_band_head_smoke(tmp_path):
             "dropout": 0.0, "head_hidden": 32, "elo_dim": 8, "n_elo_buckets": 40}
     m = BasePolicy.from_config(arch)
     ckpt = tmp_path / "enc.pt"
-    torch.save({"model": m.state_dict(), "architecture": arch}, ckpt)
+    # Drop value-head keys to mimic a policy-only checkpoint (e.g. base_64M); train must tolerate it.
+    sd = {k: v for k, v in m.state_dict().items() if not k.startswith("value_head.")}
+    torch.save({"model": sd, "architecture": arch}, ckpt)
     from tests.style_policy.synth_h5 import write_synth_h5
     h5 = write_synth_h5(tmp_path / "train.h5", elos=[1900]*256)
     out = tmp_path / "head.pt"

@@ -31,7 +31,9 @@ def train_band_head(checkpoint, band, train_h5, *, device="cuda", steps=2000,
                     num_workers=4, seed=1, out=None):
     ck = torch.load(checkpoint, map_location=device)
     arch = ck["architecture"]
-    model = BasePolicy.from_config(arch); model.load_state_dict(ck["model"])
+    # strict=False: policy-only checkpoints (e.g. base_64M, trained on j3 data) have no value
+    # head; the band-head path uses only the encoder + from/to heads, so a missing value head is fine.
+    model = BasePolicy.from_config(arch); model.load_state_dict(ck["model"], strict=False)
     model.to(device).eval()
     for p in model.parameters():
         p.requires_grad_(False)
@@ -75,7 +77,7 @@ def _mask1(u64, dev):
 def eval_band_head_row(checkpoint, band_head, val_h5, bands, *, device="cuda", n=10000):
     ck = torch.load(checkpoint, map_location=device)
     arch = ck["architecture"]; n_elo = int(arch["n_elo_buckets"])
-    model = BasePolicy.from_config(arch); model.load_state_dict(ck["model"])
+    model = BasePolicy.from_config(arch); model.load_state_dict(ck["model"], strict=False)  # see train_band_head
     model.to(device).eval()
     band_head = band_head.to(device).eval()
     with h5py.File(val_h5, "r") as f:
