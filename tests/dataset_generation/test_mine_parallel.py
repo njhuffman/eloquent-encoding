@@ -105,8 +105,10 @@ def test_run_parallel_mine_raises_on_failure(tmp_path):
     with open(data_dir / "smoke.pgn.zst", "wb") as fh:
         fh.write(zstandard.ZstdCompressor().compress(raw))
     (tmp_path / "par_smoke.yaml").write_text(_RECIPE)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=r"shard build\(s\) failed.*shard.*\.log") as ei:
         run_parallel_mine(
             tmp_path / "par_smoke.yaml", data_dir, tmp_path / "out",
             shards_per_source=2, max_concurrency=2,
         )
+    # "raise loudly": names a failing shard and points at its log directory.
+    assert "par_smoke_shard" in str(ei.value)

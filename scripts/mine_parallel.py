@@ -90,7 +90,7 @@ def run_parallel_mine(
     while pending or running:
         while pending and len(running) < max_concurrency:
             launch(pending.pop(0))
-        finished = [(p, p.poll()) for p in list(running) if p.poll() is not None]
+        finished = [(p, rc) for p in list(running) if (rc := p.poll()) is not None]
         if not finished:
             time.sleep(0.5)
             continue
