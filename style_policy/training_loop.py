@@ -76,8 +76,8 @@ def _step_loss(model, batch, device, n_elo, label_smoothing, value_loss_weight=1
     return total, metrics
 
 
-def _make_loader(h5: str, stage: dict, sample_n: int, seed: int, *, shuffle: bool):
-    ds = PackedMoveDataset(h5, sample_n=sample_n, seed=seed)
+def _make_loader(h5: str, stage: dict, sample_n: int, seed: int, *, shuffle: bool, sequential: bool = False):
+    ds = PackedMoveDataset(h5, sample_n=sample_n, seed=seed, sequential=sequential)
     dl = DataLoader(ds, batch_size=stage["batch_size"], shuffle=shuffle,
                     num_workers=stage["dataloader_num_workers"], collate_fn=PackedMoveDataset.collate)
     return ds, dl
@@ -125,7 +125,11 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device == "cuda" and amp_dtype == torch.float16)
     accum = int(stage.get("gradient_accumulation_steps", 1))
 
-    train_ds, train_dl = _make_loader(spec["train_h5"], stage, stage["sample"]["n"], stage["sample"]["seed"], shuffle=True)
+    preshuffled = bool(spec.get("preshuffled", False))
+    train_ds, train_dl = _make_loader(
+        spec["train_h5"], stage, stage["sample"]["n"], stage["sample"]["seed"],
+        shuffle=not preshuffled, sequential=preshuffled,
+    )
     val_dl = None
     if spec.get("val_h5") and spec.get("val_sample"):
         _, val_dl = _make_loader(spec["val_h5"], stage, spec["val_sample"]["n"], spec["val_sample"]["seed"], shuffle=False)

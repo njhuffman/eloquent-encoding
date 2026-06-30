@@ -8,6 +8,7 @@ import h5py
 
 from dataset_generation.builder import build_from_recipe
 from dataset_generation.recipe import Recipe
+from dataset_generation.shuffle_merge import shuffle_merge
 
 
 def main() -> int:
@@ -36,6 +37,11 @@ def main() -> int:
         help="Directory for the HDF5 file; recipe field `name` -> {output-dir}/{name}.h5",
     )
 
+    m = sub.add_parser("merge", help="Seeded shuffle-merge of band-shard h5 files")
+    m.add_argument("--shards", type=Path, nargs="+", required=True)
+    m.add_argument("--out", type=Path, required=True)
+    m.add_argument("--seed", type=int, default=0)
+
     args = parser.parse_args()
     if args.cmd == "build":
         recipe = Recipe.load(args.recipe)
@@ -53,6 +59,10 @@ def main() -> int:
             n = int(f["packed_pre"].shape[0])
         print(out)
         print(f"rows={n}  recipe_target_rows={target}", file=sys.stderr)
+        return 0
+    if args.cmd == "merge":
+        out = shuffle_merge(args.shards, args.out, seed=args.seed)
+        print(out)
         return 0
     return 1
 

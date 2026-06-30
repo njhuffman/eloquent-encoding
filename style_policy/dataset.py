@@ -15,7 +15,8 @@ _HIST_LEN = 4
 
 
 class PackedMoveDataset(Dataset):
-    def __init__(self, h5_path: str | Path, *, sample_n: int | None = None, seed: int = 0, band: tuple[int, int] | None = None):
+    def __init__(self, h5_path: str | Path, *, sample_n: int | None = None, seed: int = 0,
+                 band: tuple[int, int] | None = None, sequential: bool = False):
         self.path = str(h5_path)
         with h5py.File(self.path, "r") as f:
             n = int(f["packed_pre"].shape[0])
@@ -27,8 +28,12 @@ class PackedMoveDataset(Dataset):
             # Detect history columns once at construction time (not per-row).
             self._has_hist: bool = "hist_from" in f
         if sample_n is not None and sample_n < len(pool):
-            rng = np.random.default_rng(seed)
-            self.indices = np.sort(rng.choice(pool, size=sample_n, replace=False))
+            if sequential:
+                # Pre-shuffled-on-disk file: take the first N in order (zero random reads).
+                self.indices = pool[:sample_n]
+            else:
+                rng = np.random.default_rng(seed)
+                self.indices = np.sort(rng.choice(pool, size=sample_n, replace=False))
         else:
             self.indices = pool  # nonzero()/arange() are already ascending
         self._f: h5py.File | None = None
