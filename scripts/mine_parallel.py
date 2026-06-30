@@ -20,7 +20,7 @@ def _balance_bins(weights: list[int], k: int) -> list[list[int]]:
         raise ValueError("k must be >= 1")
     bins: list[list[int]] = [[] for _ in range(k)]
     loads = [0] * k
-    for i in sorted(range(len(weights)), key=lambda i: weights[i]):
+    for i in sorted(range(len(weights)), key=lambda i: weights[i], reverse=True):
         j = min(range(k), key=lambda b: loads[b])
         bins[j].append(i)
         loads[j] += weights[i]

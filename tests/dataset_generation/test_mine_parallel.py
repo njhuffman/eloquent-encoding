@@ -23,7 +23,7 @@ _BASE = {
 def test_balance_bins_greedy_lpt():
     bins = _balance_bins([300, 100, 200], 2)
     loads = sorted(sum([300, 100, 200][i] for i in b) for b in bins)
-    assert loads == [200, 400]              # {300,100} vs {200}
+    assert loads == [300, 300]              # LPT: {300} vs {200,100} — minimizes max load
     assert all(b == sorted(b) for b in bins)  # ascending within bin
 
 
