@@ -1,0 +1,82 @@
+# ~124M-sample training gen: last-4-ply history (emitted automatically by the builder) + WDL,
+# across 12 bands (1000-2199). Sized from scripts/band_census.py (2026-06-30).
+#
+# Spread: bands 1000-2099 are EVEN at the fair share ~10.66M samples each
+#   (take_games=333000 x 4 sources x 8 = 10,656,000; every cell clears 333k -- scarcest is
+#    2025-02/2000-2099 = 371,395). Band 2100-2199 is too sparse to fill evenly (only ~0.85M
+#    games across 4 months), so it takes ~95% of its per-source census (margin so the ~1.7%
+#    short-game drop does not trip _ensure_strata_quotas_met and fail a shard).
+#   Totals: 11 x 10,656,000 + 6,464,000 = ~123.7M samples.
+#
+# Bands 1000-2099 are perfectly even; 2100-2199 is intentionally smaller (~6.5M, all available
+# strong-club play -- honest size, not oversampled). This needs MultiBandPolicy.head_index
+# extended to 12 heads (clamp 1000-2199, //100 -> 12 buckets) + bands set in the model config to
+# actually route these as their own strength level. (Mining captures the data either way.)
+#
+# Train: 2025-01/02/03/04. Validation is held out on 2025-05 (wdl_validation_2025_05.yaml) -> zero
+# train/val month overlap.
+name: wdl_history_128M
+
+master_seed: 1
+time_control: 600+0
+bucket_by: white
+skip_opening_plies: 4
+exclude_single_legal_move: false
+
+source_plans:
+  - source: lichess_db_standard_rated_2025-01_tc_600_0.pgn.zst
+    strata:
+      - {elo_min: 1000, elo_max: 1099, take_games: 333000, samples_per_game: 8, stratum_seed: 1001}
+      - {elo_min: 1100, elo_max: 1199, take_games: 333000, samples_per_game: 8, stratum_seed: 1002}
+      - {elo_min: 1200, elo_max: 1299, take_games: 333000, samples_per_game: 8, stratum_seed: 1003}
+      - {elo_min: 1300, elo_max: 1399, take_games: 333000, samples_per_game: 8, stratum_seed: 1004}
+      - {elo_min: 1400, elo_max: 1499, take_games: 333000, samples_per_game: 8, stratum_seed: 1005}
+      - {elo_min: 1500, elo_max: 1599, take_games: 333000, samples_per_game: 8, stratum_seed: 1006}
+      - {elo_min: 1600, elo_max: 1699, take_games: 333000, samples_per_game: 8, stratum_seed: 1007}
+      - {elo_min: 1700, elo_max: 1799, take_games: 333000, samples_per_game: 8, stratum_seed: 1008}
+      - {elo_min: 1800, elo_max: 1899, take_games: 333000, samples_per_game: 8, stratum_seed: 1009}
+      - {elo_min: 1900, elo_max: 1999, take_games: 333000, samples_per_game: 8, stratum_seed: 1010}
+      - {elo_min: 2000, elo_max: 2099, take_games: 333000, samples_per_game: 8, stratum_seed: 1011}
+      - {elo_min: 2100, elo_max: 2199, take_games: 219000, samples_per_game: 8, stratum_seed: 1012}
+  - source: lichess_db_standard_rated_2025-02_tc_600_0.pgn.zst
+    strata:
+      - {elo_min: 1000, elo_max: 1099, take_games: 333000, samples_per_game: 8, stratum_seed: 2001}
+      - {elo_min: 1100, elo_max: 1199, take_games: 333000, samples_per_game: 8, stratum_seed: 2002}
+      - {elo_min: 1200, elo_max: 1299, take_games: 333000, samples_per_game: 8, stratum_seed: 2003}
+      - {elo_min: 1300, elo_max: 1399, take_games: 333000, samples_per_game: 8, stratum_seed: 2004}
+      - {elo_min: 1400, elo_max: 1499, take_games: 333000, samples_per_game: 8, stratum_seed: 2005}
+      - {elo_min: 1500, elo_max: 1599, take_games: 333000, samples_per_game: 8, stratum_seed: 2006}
+      - {elo_min: 1600, elo_max: 1699, take_games: 333000, samples_per_game: 8, stratum_seed: 2007}
+      - {elo_min: 1700, elo_max: 1799, take_games: 333000, samples_per_game: 8, stratum_seed: 2008}
+      - {elo_min: 1800, elo_max: 1899, take_games: 333000, samples_per_game: 8, stratum_seed: 2009}
+      - {elo_min: 1900, elo_max: 1999, take_games: 333000, samples_per_game: 8, stratum_seed: 2010}
+      - {elo_min: 2000, elo_max: 2099, take_games: 333000, samples_per_game: 8, stratum_seed: 2011}
+      - {elo_min: 2100, elo_max: 2199, take_games: 189000, samples_per_game: 8, stratum_seed: 2012}
+  - source: lichess_db_standard_rated_2025-03_tc_600_0.pgn.zst
+    strata:
+      - {elo_min: 1000, elo_max: 1099, take_games: 333000, samples_per_game: 8, stratum_seed: 3001}
+      - {elo_min: 1100, elo_max: 1199, take_games: 333000, samples_per_game: 8, stratum_seed: 3002}
+      - {elo_min: 1200, elo_max: 1299, take_games: 333000, samples_per_game: 8, stratum_seed: 3003}
+      - {elo_min: 1300, elo_max: 1399, take_games: 333000, samples_per_game: 8, stratum_seed: 3004}
+      - {elo_min: 1400, elo_max: 1499, take_games: 333000, samples_per_game: 8, stratum_seed: 3005}
+      - {elo_min: 1500, elo_max: 1599, take_games: 333000, samples_per_game: 8, stratum_seed: 3006}
+      - {elo_min: 1600, elo_max: 1699, take_games: 333000, samples_per_game: 8, stratum_seed: 3007}
+      - {elo_min: 1700, elo_max: 1799, take_games: 333000, samples_per_game: 8, stratum_seed: 3008}
+      - {elo_min: 1800, elo_max: 1899, take_games: 333000, samples_per_game: 8, stratum_seed: 3009}
+      - {elo_min: 1900, elo_max: 1999, take_games: 333000, samples_per_game: 8, stratum_seed: 3010}
+      - {elo_min: 2000, elo_max: 2099, take_games: 333000, samples_per_game: 8, stratum_seed: 3011}
+      - {elo_min: 2100, elo_max: 2199, take_games: 206000, samples_per_game: 8, stratum_seed: 3012}
+  - source: lichess_db_standard_rated_2025-04_tc_600_0.pgn.zst
+    strata:
+      - {elo_min: 1000, elo_max: 1099, take_games: 333000, samples_per_game: 8, stratum_seed: 4001}
+      - {elo_min: 1100, elo_max: 1199, take_games: 333000, samples_per_game: 8, stratum_seed: 4002}
+      - {elo_min: 1200, elo_max: 1299, take_games: 333000, samples_per_game: 8, stratum_seed: 4003}
+      - {elo_min: 1300, elo_max: 1399, take_games: 333000, samples_per_game: 8, stratum_seed: 4004}
+      - {elo_min: 1400, elo_max: 1499, take_games: 333000, samples_per_game: 8, stratum_seed: 4005}
+      - {elo_min: 1500, elo_max: 1599, take_games: 333000, samples_per_game: 8, stratum_seed: 4006}
+      - {elo_min: 1600, elo_max: 1699, take_games: 333000, samples_per_game: 8, stratum_seed: 4007}
+      - {elo_min: 1700, elo_max: 1799, take_games: 333000, samples_per_game: 8, stratum_seed: 4008}
+      - {elo_min: 1800, elo_max: 1899, take_games: 333000, samples_per_game: 8, stratum_seed: 4009}
+      - {elo_min: 1900, elo_max: 1999, take_games: 333000, samples_per_game: 8, stratum_seed: 4010}
+      - {elo_min: 2000, elo_max: 2099, take_games: 333000, samples_per_game: 8, stratum_seed: 4011}
+      - {elo_min: 2100, elo_max: 2199, take_games: 194000, samples_per_game: 8, stratum_seed: 4012}
