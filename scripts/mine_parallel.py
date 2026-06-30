@@ -67,6 +67,12 @@ def run_parallel_mine(
     shard_dir = output_dir / "_shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
 
+    # Clear this recipe's stale shard artifacts so a re-run (esp. with a different
+    # shard count) cannot leave orphan {name}_shardNN.* behind for a glob to pick up.
+    for stale in shard_dir.glob(f'{recipe["name"]}_shard*'):
+        if stale.suffix in (".h5", ".yaml", ".log"):
+            stale.unlink()
+
     recipe_paths: list[Path] = []
     for sub in shards:
         p = shard_dir / f'{sub["name"]}.yaml'

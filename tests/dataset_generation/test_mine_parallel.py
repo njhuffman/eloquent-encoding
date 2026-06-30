@@ -98,6 +98,22 @@ def test_run_parallel_mine_produces_shards(tmp_path):
     assert total == 12
 
 
+def test_run_parallel_mine_clears_stale_shards(tmp_path):
+    data_dir = tmp_path / "data"; data_dir.mkdir()
+    raw = (_GAME.format(elo=1550) * 4 + _GAME.format(elo=1650) * 4).encode()
+    with open(data_dir / "smoke.pgn.zst", "wb") as fh:
+        fh.write(zstandard.ZstdCompressor().compress(raw))
+    (tmp_path / "par_smoke.yaml").write_text(_RECIPE)
+    # Plant an orphan shard from a hypothetical prior run with more shards.
+    shard_dir = tmp_path / "out" / "_shards"; shard_dir.mkdir(parents=True)
+    orphan = shard_dir / "par_smoke_shard09.h5"; orphan.write_bytes(b"stale")
+    run_parallel_mine(
+        tmp_path / "par_smoke.yaml", data_dir, tmp_path / "out",
+        shards_per_source=2, max_concurrency=2,
+    )
+    assert not orphan.exists()  # stale artifact removed before this run
+
+
 def test_run_parallel_mine_raises_on_failure(tmp_path):
     data_dir = tmp_path / "data"; data_dir.mkdir()
     # No games for band 1600 -> that shard fails its quota -> RuntimeError naming it.
