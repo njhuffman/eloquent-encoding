@@ -9,10 +9,12 @@ CFG = dict(d_model=32, n_layers=2, nhead=4, dim_feedforward=64, dropout=0.0,
 
 def _make(path, n=8):
     with PackedBatchWriter(path, batch_size=n) as w:
+        absent_hist = np.array([-1, -1, -1, -1], dtype=np.int8)
         for i in range(n):
             pre = np.zeros(34, np.uint8); pre[32] = 1
             w.append_row(packed_pre=pre, from_legal_u64=(1 << 1), to_legal_u64=(1 << 2),
-                         from_sq=1, to_sq=2, promotion=0, elo_to_move=1500, opp_elo=1500, result=i % 3)
+                         from_sq=1, to_sq=2, promotion=0, elo_to_move=1500, opp_elo=1500, result=i % 3,
+                         hist_from=absent_hist, hist_to=absent_hist, hist_cap=np.array([0, 0, 0, 0], dtype=np.int8))
 
 def test_step_loss_includes_value_term(tmp_path):
     p = tmp_path / "t.h5"; _make(p)

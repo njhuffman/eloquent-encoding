@@ -17,6 +17,7 @@ class PackedBatchWriter:
         ("from_sq", np.uint8), ("to_sq", np.uint8), ("promotion", np.uint8),
         ("elo_to_move", np.int16), ("opp_elo", np.int16), ("result", np.int8),
     )
+    _HIST = ("hist_from", "hist_to", "hist_cap")
     COLUMNS = ("packed_pre",) + tuple(n for n, _ in _SCALAR)
 
     def __init__(self, path: Path, batch_size: int = 1024) -> None:
@@ -32,7 +33,14 @@ class PackedBatchWriter:
                                dtype=np.uint8, chunks=(CHUNK, PACKED_LEN))
         for name, dt in self._SCALAR:
             self._f.create_dataset(name, shape=(0,), maxshape=(None,), dtype=dt, chunks=(CHUNK,))
+        # Create history columns (each is (N, 4) int8)
+        for name in self._HIST:
+            self._f.create_dataset(name, shape=(0, 4), maxshape=(None, 4),
+                                   dtype=np.int8, chunks=(CHUNK, 4))
         self._buf = {c: [] for c in self.COLUMNS}
+        # Initialize buffers for history columns
+        for name in self._HIST:
+            self._buf[name] = []
 
     def __enter__(self) -> "PackedBatchWriter":
         return self
@@ -59,10 +67,17 @@ class PackedBatchWriter:
                 d.resize((o + m,))
                 d[o : o + m] = np.asarray(self._buf[name], dtype=d.dtype)
             self._buf[name].clear()
+        # Flush history columns (2D, shape (N, 4))
+        for name in self._HIST:
+            d = self._f[name]
+            d.resize((o + m, 4))
+            d[o : o + m] = np.asarray(self._buf[name], dtype=np.int8)
+            self._buf[name].clear()
         self._n += m
 
     def append_row(self, *, packed_pre, from_legal_u64, to_legal_u64, from_sq, to_sq,
-                   promotion, elo_to_move, opp_elo, result) -> None:
+                   promotion, elo_to_move, opp_elo, result,
+                   hist_from=None, hist_to=None, hist_cap=None) -> None:
         self._buf["packed_pre"].append(np.asarray(packed_pre, dtype=np.uint8).reshape(PACKED_LEN))
         self._buf["from_legal_u64"].append(np.uint64(from_legal_u64))
         self._buf["to_legal_u64"].append(np.uint64(to_legal_u64))
@@ -72,6 +87,16 @@ class PackedBatchWriter:
         self._buf["elo_to_move"].append(elo_to_move)
         self._buf["opp_elo"].append(opp_elo)
         self._buf["result"].append(result)
+        # Append history columns (each should be a length-4 sequence, default to all-absent)
+        if hist_from is None:
+            hist_from = np.array([-1, -1, -1, -1], dtype=np.int8)
+        if hist_to is None:
+            hist_to = np.array([-1, -1, -1, -1], dtype=np.int8)
+        if hist_cap is None:
+            hist_cap = np.array([0, 0, 0, 0], dtype=np.int8)
+        self._buf["hist_from"].append(np.asarray(hist_from, dtype=np.int8))
+        self._buf["hist_to"].append(np.asarray(hist_to, dtype=np.int8))
+        self._buf["hist_cap"].append(np.asarray(hist_cap, dtype=np.int8))
         if len(self._buf["packed_pre"]) >= self.batch_size:
             self.flush()
 
