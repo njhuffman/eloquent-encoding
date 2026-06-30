@@ -1,0 +1,53 @@
+# Next model (HELD — overnight run, not launched yet): multiband_64M + last-move history.
+# Trains on wdl_history_64M.h5 (mine first via dataset_generation/wdl_history_64M.yaml).
+# use_last_move + n_history_ply=4 + last_move_dropout=0.25 give the variable-K / graceful-absent
+# behavior. castling/ep + cls-in-heads already on (inherited from multiband_64M).
+#
+# NOTE: bands stay 1000-1900 (10 heads) — MultiBandPolicy.head_index currently clamps elo to
+# 1000-1999, so the mined 2000-2199 samples route to the 1900 head. To use 2000-2199 as their own
+# heads, extend head_index + set `bands:` here (deferred follow-up, decide from realized 2000-2199
+# counts after the gen).
+# NOTE: the inference K-sweep (T2) needs a history-carrying val set — regenerate wdl_validation WITH
+# history. Training val below (wdl_validation_1M, history-less) runs with hist=None, which is fine for
+# a training-progress metric (the model is dropout-robust to absent history).
+name: multiband_history_64M
+checkpoint_dir: style_policy_checkpoints/multiband_history_64M
+train_h5: /mnt/eloquence_bulk/databases/wdl_history_64M.h5
+val_h5: /mnt/eloquence_bulk/databases/wdl_validation_1M.h5
+val_sample: {n: 10000, seed: 42}
+wandb:
+  project: style_policy
+  mode: online
+architecture:
+  d_model: 256
+  n_layers: 8
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  head_hidden: 512
+  elo_dim: 32
+  n_elo_buckets: 40
+  use_castling_ep: true
+  use_cls_in_heads: true
+  use_last_move: true
+  n_history_ply: 4
+defaults:
+  batch_size: 256
+  dataloader_num_workers: 4
+  use_amp: true
+  amp_dtype: bf16
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 50
+  val_interval: 2000
+  checkpoint_interval: 2000
+  lr_schedule: cosine
+  warmup_steps: 2000
+  lr_min_frac: 0.0
+  seed: 0
+  value_loss_weight: 1.0
+  last_move_dropout: 0.25
+stages:
+  - sample: {n: 64000000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0002}
+    label_smoothing: 0.1
