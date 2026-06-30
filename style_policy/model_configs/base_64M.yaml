@@ -17,6 +17,8 @@ architecture:
   head_hidden: 512
   elo_dim: 32
   n_elo_buckets: 40
+  use_castling_ep: true
+  use_cls_in_heads: true
 defaults:
   batch_size: 256
   dataloader_num_workers: 4
