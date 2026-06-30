@@ -26,7 +26,8 @@ class MultiBandPolicy(nn.Module):
                            dim_feedforward=int(cfg["dim_feedforward"]), dropout=float(cfg["dropout"]),
                            use_castling_ep=bool(cfg.get("use_castling_ep", False)))
         bands = list(cfg.get("bands", BANDS))
-        heads = [BandHead(d, h) for _ in bands]
+        use_cls = bool(cfg.get("use_cls_in_heads", False))
+        heads = [BandHead(d, h, use_cls=use_cls) for _ in bands]
         value = WDLHead(d_model=d, hidden=h, elo_dim=int(cfg.get("elo_dim", 0)),
                         n_elo_buckets=int(cfg.get("n_elo_buckets", 0)))
         return cls(enc, heads, value, bands=bands)

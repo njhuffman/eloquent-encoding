@@ -28,9 +28,10 @@ class BasePolicy(nn.Module):
         elo_dim = int(cfg.get("elo_dim", 0))
         n_elo = int(cfg.get("n_elo_buckets", 0))
         h = int(cfg["head_hidden"])
+        use_cls = bool(cfg.get("use_cls_in_heads", False))
         return cls(enc,
-                   FromHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo),
-                   ToHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo),
+                   FromHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo, use_cls=use_cls),
+                   ToHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo, use_cls=use_cls),
                    WDLHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo))
 
     def encode(self, packed_pre: torch.Tensor):
@@ -38,14 +39,14 @@ class BasePolicy(nn.Module):
         return self.encoder(board)
 
     def forward_from(self, packed_pre, from_legal_u64, *, elo_idx=None):
-        _, squares = self.encode(packed_pre)
-        logits = self.from_head(squares, elo_idx=elo_idx)
+        cls, squares = self.encode(packed_pre)
+        logits = self.from_head(squares, cls=cls, elo_idx=elo_idx)
         mask = u64_to_mask(from_legal_u64).to(logits.device)
         return logits.masked_fill(~mask, _NEG), mask
 
     def forward_to(self, packed_pre, from_sq, to_legal_u64, *, elo_idx=None):
-        _, squares = self.encode(packed_pre)
-        logits = self.to_head(squares, from_sq, elo_idx=elo_idx)
+        cls, squares = self.encode(packed_pre)
+        logits = self.to_head(squares, from_sq, cls=cls, elo_idx=elo_idx)
         mask = u64_to_mask(to_legal_u64).to(logits.device)
         return logits.masked_fill(~mask, _NEG), mask
 
@@ -56,9 +57,9 @@ class BasePolicy(nn.Module):
     def forward_policy(self, packed_pre, from_sq, from_legal_u64, to_legal_u64, *, elo_idx=None):
         """Encode once; return (from_logits, from_mask, to_logits, to_mask, value_logits)."""
         cls, squares = self.encode(packed_pre)
-        from_logits = self.from_head(squares, elo_idx=elo_idx)
+        from_logits = self.from_head(squares, cls=cls, elo_idx=elo_idx)
         from_mask = u64_to_mask(from_legal_u64).to(from_logits.device)
-        to_logits = self.to_head(squares, from_sq, elo_idx=elo_idx)
+        to_logits = self.to_head(squares, from_sq, cls=cls, elo_idx=elo_idx)
         to_mask = u64_to_mask(to_legal_u64).to(to_logits.device)
         value_logits = self.value_head(cls, elo_idx=elo_idx)
         return (from_logits.masked_fill(~from_mask, float("-inf")), from_mask,

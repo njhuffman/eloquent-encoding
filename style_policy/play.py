@@ -66,9 +66,9 @@ class PolicyBot(Player):
                 return mv
         # ---- existing model path unchanged below ----
         pk = torch.from_numpy(board_to_packed(board)[None]).to(self.device)
-        _, squares = self.model.encode(pk)
-        from_sq = self._sample(self.model.from_head(squares, elo_idx=self._elo_idx), legal_from_u64(board))
-        to_logits = self.model.to_head(squares, torch.tensor([from_sq], device=self.device), elo_idx=self._elo_idx)
+        cls, squares = self.model.encode(pk)
+        from_sq = self._sample(self.model.from_head(squares, cls=cls, elo_idx=self._elo_idx), legal_from_u64(board))
+        to_logits = self.model.to_head(squares, torch.tensor([from_sq], device=self.device), cls=cls, elo_idx=self._elo_idx)
         to_sq = self._sample(to_logits, legal_to_u64(board, from_sq))
         mv = chess.Move(from_sq, to_sq)
         if mv not in board.legal_moves:                       # promotion: default to queen

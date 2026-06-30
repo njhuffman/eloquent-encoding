@@ -23,7 +23,7 @@ def _init_wandb(spec, stage, device):
                       config={"device": device, "architecture": spec["architecture"], **stage})
 
 
-def _routed_policy_loss(model, squares, hidx, from_sq, to_sq, fmask, tmask, ls):
+def _routed_policy_loss(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask, ls):
     B = squares.shape[0]
     fl = squares.new_zeros(()); tl = squares.new_zeros(())
     for g in range(model.n_bands):
@@ -32,8 +32,9 @@ def _routed_policy_loss(model, squares, hidx, from_sq, to_sq, fmask, tmask, ls):
         if k == 0:
             continue
         sq = squares[m]
-        fl = fl + masked_square_ce(model.heads[g].from_logits(sq), from_sq[m], fmask[m], label_smoothing=ls) * k
-        tl = tl + masked_square_ce(model.heads[g].to_logits(sq, from_sq[m]), to_sq[m], tmask[m], label_smoothing=ls) * k
+        cl = cls[m]  # index cls to the band's row subset
+        fl = fl + masked_square_ce(model.heads[g].from_logits(sq, cl), from_sq[m], fmask[m], label_smoothing=ls) * k
+        tl = tl + masked_square_ce(model.heads[g].to_logits(sq, from_sq[m], cl), to_sq[m], tmask[m], label_smoothing=ls) * k
     return fl / B, tl / B
 
 
@@ -46,7 +47,7 @@ def _step(model, batch, device, n_elo, ls, vlw):
     tmask = u64_to_mask(batch["to_legal_u64"].to(device))
     result = batch["result"].to(device)
     cls, squares = model.encode(packed)
-    fl, tl = _routed_policy_loss(model, squares, hidx, from_sq, to_sq, fmask, tmask, ls)
+    fl, tl = _routed_policy_loss(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask, ls)
     vl = wdl_ce(model.value_head(cls, elo_idx=elo_to_bucket(elo, n_elo).to(device)), result)
     return fl + tl + vlw * vl, {"from_ce": float(fl), "to_ce": float(tl), "wdl_ce": float(vl)}
 

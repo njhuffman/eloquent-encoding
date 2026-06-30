@@ -17,16 +17,17 @@ import random
 import chess
 
 class BandHead(nn.Module):
-    def __init__(self, d_model: int, hidden: int):
+    def __init__(self, d_model: int, hidden: int, use_cls: bool = False):
         super().__init__()
-        self.from_head = FromHead(d_model=d_model, hidden=hidden, elo_dim=0)
-        self.to_head = ToHead(d_model=d_model, hidden=hidden, elo_dim=0)
+        self.from_head = FromHead(d_model=d_model, hidden=hidden, elo_dim=0, use_cls=use_cls)
+        self.to_head = ToHead(d_model=d_model, hidden=hidden, elo_dim=0, use_cls=use_cls)
 
-    def from_logits(self, squares: torch.Tensor) -> torch.Tensor:
-        return self.from_head(squares)
+    def from_logits(self, squares: torch.Tensor, cls: torch.Tensor | None = None) -> torch.Tensor:
+        return self.from_head(squares, cls=cls)
 
-    def to_logits(self, squares: torch.Tensor, from_sq: torch.Tensor) -> torch.Tensor:
-        return self.to_head(squares, from_sq)
+    def to_logits(self, squares: torch.Tensor, from_sq: torch.Tensor,
+                  cls: torch.Tensor | None = None) -> torch.Tensor:
+        return self.to_head(squares, from_sq, cls=cls)
 
 
 def train_band_head(checkpoint, band, train_h5, *, device="cuda", steps=2000,
@@ -154,9 +155,9 @@ class BandHeadBot(Player):
             if mv is not None:
                 return mv
         pk = torch.from_numpy(board_to_packed(board)[None]).to(self.device)
-        _, squares = self.model.encode(pk)
-        from_sq = self._sample(self.head.from_logits(squares), legal_from_u64(board))
-        to_logits = self.head.to_logits(squares, torch.tensor([from_sq], device=self.device))
+        cls, squares = self.model.encode(pk)
+        from_sq = self._sample(self.head.from_logits(squares, cls), legal_from_u64(board))
+        to_logits = self.head.to_logits(squares, torch.tensor([from_sq], device=self.device), cls)
         to_sq = self._sample(to_logits, legal_to_u64(board, from_sq))
         mv = chess.Move(from_sq, to_sq)
         if mv not in board.legal_moves:                       # promotion: default to queen
