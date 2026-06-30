@@ -38,6 +38,9 @@ class MultiBandPolicy(nn.Module):
         board = packed_to_board_tensor(packed_pre).to(next(self.parameters()).device)
         return self.encoder(board, hist=hist)
 
-    @staticmethod
-    def head_index(elo: torch.Tensor) -> torch.Tensor:
-        return ((elo.clamp(1000, 1999) - 1000) // 100).long()
+    def head_index(self, elo: torch.Tensor) -> torch.Tensor:
+        """Route each elo to its band head. Bands are 100-wide and contiguous from bands[0];
+        elos below the first band map to head 0 and at/above the last band to the final head.
+        For the default 10 bands (1000-1900) this is identical to the old clamp(1000,1999)//100."""
+        idx = ((elo - self.bands[0]) // 100).long()
+        return idx.clamp(0, self.n_bands - 1)
