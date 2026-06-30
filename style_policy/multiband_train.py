@@ -101,8 +101,10 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
     model = MultiBandPolicy.from_config(arch).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=stage["train"]["learning_rate"],
                             weight_decay=stage["weight_decay"], fused=(device == "cuda"))
-    ds = PackedMoveDataset(spec["train_h5"], sample_n=stage["sample"]["n"], seed=stage["sample"]["seed"])
-    dl = DataLoader(ds, batch_size=stage["batch_size"], shuffle=True,
+    presorted = bool(spec.get("presorted", False))
+    ds = PackedMoveDataset(spec["train_h5"], sample_n=stage["sample"]["n"],
+                           seed=stage["sample"]["seed"], sequential=presorted)
+    dl = DataLoader(ds, batch_size=stage["batch_size"], shuffle=not presorted,
                     num_workers=stage["dataloader_num_workers"], collate_fn=PackedMoveDataset.collate)
     val_dl = None
     if spec.get("val_h5") and spec.get("val_sample"):
