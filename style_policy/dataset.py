@@ -8,6 +8,11 @@ from torch.utils.data import Dataset
 
 _FIELDS_U8 = ("from_sq", "to_sq", "promotion")
 
+# Absent-ply sentinel value (int8 -1 = 255 on disk; we cast to int64 -1 in Python).
+_HIST_ABSENT_SQ = -1
+_HIST_ABSENT_CAP = 0
+_HIST_LEN = 4
+
 
 class PackedMoveDataset(Dataset):
     def __init__(self, h5_path: str | Path, *, sample_n: int | None = None, seed: int = 0, band: tuple[int, int] | None = None):
@@ -19,6 +24,8 @@ class PackedMoveDataset(Dataset):
                 pool = np.nonzero((elo >= band[0]) & (elo < band[1]))[0]
             else:
                 pool = np.arange(n)
+            # Detect history columns once at construction time (not per-row).
+            self._has_hist: bool = "hist_from" in f
         if sample_n is not None and sample_n < len(pool):
             rng = np.random.default_rng(seed)
             self.indices = np.sort(rng.choice(pool, size=sample_n, replace=False))
@@ -47,6 +54,15 @@ class PackedMoveDataset(Dataset):
         }
         for k in _FIELDS_U8:
             out[k] = torch.tensor(int(f[k][idx]), dtype=torch.int64)
+        # Optional last-move history columns (absent-by-default for older datasets).
+        if self._has_hist:
+            out["hist_from"] = torch.from_numpy(f["hist_from"][idx].astype(np.int64))
+            out["hist_to"]   = torch.from_numpy(f["hist_to"][idx].astype(np.int64))
+            out["hist_cap"]  = torch.from_numpy(f["hist_cap"][idx].astype(np.int64))
+        else:
+            out["hist_from"] = torch.full((_HIST_LEN,), _HIST_ABSENT_SQ,  dtype=torch.int64)
+            out["hist_to"]   = torch.full((_HIST_LEN,), _HIST_ABSENT_SQ,  dtype=torch.int64)
+            out["hist_cap"]  = torch.full((_HIST_LEN,), _HIST_ABSENT_CAP, dtype=torch.int64)
         return out
 
     @staticmethod
