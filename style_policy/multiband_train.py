@@ -10,6 +10,7 @@ from style_policy.dataset import PackedMoveDataset
 from style_policy.loss import masked_square_ce, wdl_ce
 from style_policy.legal_mask import u64_to_mask
 from style_policy.model_spec import elo_to_bucket
+from style_policy.history import horizon_dropout
 
 
 def _init_wandb(spec, stage, device):
@@ -38,7 +39,7 @@ def _routed_policy_loss(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask,
     return fl / B, tl / B
 
 
-def _step(model, batch, device, n_elo, ls, vlw):
+def _step(model, batch, device, n_elo, ls, vlw, last_move_dropout: float = 0.0):
     packed = batch["packed_pre"].to(device)
     elo = batch["elo_to_move"]
     hidx = model.head_index(elo).to(device)
@@ -46,7 +47,17 @@ def _step(model, batch, device, n_elo, ls, vlw):
     fmask = u64_to_mask(batch["from_legal_u64"].to(device))
     tmask = u64_to_mask(batch["to_legal_u64"].to(device))
     result = batch["result"].to(device)
-    cls, squares = model.encode(packed)
+    # Build hist tuple if batch carries history columns; else pass None (backward-compat).
+    if "hist_from" in batch:
+        hf = batch["hist_from"].to(device)
+        ht = batch["hist_to"].to(device)
+        hc = batch["hist_cap"].to(device)
+        if last_move_dropout > 0.0:
+            hf, ht, hc = horizon_dropout(hf, ht, hc, p=last_move_dropout)
+        hist = (hf, ht, hc)
+    else:
+        hist = None
+    cls, squares = model.encode(packed, hist=hist)
     fl, tl = _routed_policy_loss(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask, ls)
     vl = wdl_ce(model.value_head(cls, elo_idx=elo_to_bucket(elo, n_elo).to(device)), result)
     return fl + tl + vlw * vl, {"from_ce": float(fl), "to_ce": float(tl), "wdl_ce": float(vl)}
@@ -57,7 +68,7 @@ def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw):
     was = model.training; model.eval(); tot = 0.0; nb = 0
     for batch in val_dl:
         with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
-            loss, m = _step(model, batch, device, n_elo, 0.0, vlw)
+            loss, m = _step(model, batch, device, n_elo, 0.0, vlw, last_move_dropout=0.0)
         tot += m["from_ce"] + m["to_ce"]; nb += 1
     if was:
         model.train()
@@ -121,6 +132,7 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
             sched.load_state_dict(st["scheduler"])
 
     ls = stage.get("label_smoothing", 0.0); vlw = stage.get("value_loss_weight", 1.0)
+    lmd = float(stage.get("last_move_dropout", 0.0))
     val_interval = int(stage.get("val_interval", 0)); ckpt_interval = int(stage.get("checkpoint_interval", 0))
     print(f"multiband train: {name} steps={total_steps} compile={'on' if do_compile else 'off'}")
     run = _init_wandb(spec, stage, device)
@@ -130,7 +142,7 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
             if step >= total_steps:
                 break
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
-                loss, m = _step(model, batch, device, n_elo, ls, vlw)
+                loss, m = _step(model, batch, device, n_elo, ls, vlw, last_move_dropout=lmd)
             if not torch.isfinite(loss):
                 raise RuntimeError(f"non-finite loss at step {step}")
             opt.zero_grad(set_to_none=True); loss.backward()
