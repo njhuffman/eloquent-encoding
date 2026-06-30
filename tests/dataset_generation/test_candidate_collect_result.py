@@ -18,7 +18,7 @@ def test_rows_carry_opp_elo_and_result_from_stm_perspective():
     _, rows = collect_candidate_positions(_game(), skip_opening_plies=0, exclude_single_legal_move=False)
     assert rows, "expected candidate rows"
     # White (stm=0) won -> result 2, opp_elo=1600; Black (stm=1) lost -> result 0, opp_elo=1500
-    for ply, stm, elo, opp, result, move in rows:
+    for ply, stm, elo, opp, result, move, hist in rows:
         if stm == 0:
             assert elo == 1500 and opp == 1600 and result == 2
         else:

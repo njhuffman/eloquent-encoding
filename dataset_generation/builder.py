@@ -88,7 +88,7 @@ def _write_samples_for_stratum(
         )
     rng = _rng_for_game(master_seed, source_plan_index, stratum, stratum_index, g)
     for j in _sample_indices(rng, k, stratum.samples_per_game):
-        ply, stm, elo, opp_elo, result, move = candidates[j]
+        ply, stm, elo, opp_elo, result, move, hist = candidates[j]
         board = board_at_ply(mainline, ply)
         fr, to = move_to_from_to(move)
         writer.append_row(
@@ -97,6 +97,9 @@ def _write_samples_for_stratum(
             to_legal_u64=legal_to_u64(board, fr),
             from_sq=fr, to_sq=to, promotion=promotion_code(move),
             elo_to_move=int(elo), opp_elo=int(opp_elo), result=int(result),
+            hist_from=[h[0] for h in hist],
+            hist_to=[h[1] for h in hist],
+            hist_cap=[h[2] for h in hist],
         )
 
 
