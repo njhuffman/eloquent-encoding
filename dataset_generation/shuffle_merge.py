@@ -11,6 +11,9 @@ import h5py
 import numpy as np
 
 
+_WRITE_CHUNK = 1_000_000  # rows per permuted-write block (bounds the temp copy size)
+
+
 def shuffle_merge(shard_paths, out_path, *, seed: int) -> Path:
     shard_paths = [Path(p) for p in shard_paths]
     if not shard_paths:
@@ -31,13 +34,18 @@ def shuffle_merge(shard_paths, out_path, *, seed: int) -> Path:
     with h5py.File(out_path, "w") as out:
         for k in names:
             dt, tail = specs[k]
+            # Hold one whole column (buf), then write its permuted form in chunks so we
+            # never materialize a second full copy -> peak RAM ~= 1x the largest column
+            # (plus the perm array), not 2x.
             buf = np.empty((n, *tail), dtype=dt)
             off = 0
             for p, ln in zip(shard_paths, lengths):
                 with h5py.File(p, "r") as f:
                     buf[off:off + ln] = f[k][:]
                 off += ln
-            out.create_dataset(k, data=buf[perm])
+            dset = out.create_dataset(k, shape=(n, *tail), dtype=dt)
+            for i in range(0, n, _WRITE_CHUNK):
+                dset[i:i + _WRITE_CHUNK] = buf[perm[i:i + _WRITE_CHUNK]]
     return out_path
 
 

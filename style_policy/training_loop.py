@@ -125,10 +125,10 @@ def train_one_stage(spec: dict, stage_idx: int, device: str, *, resume: bool = F
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device == "cuda" and amp_dtype == torch.float16)
     accum = int(stage.get("gradient_accumulation_steps", 1))
 
-    presorted = bool(spec.get("presorted", False))
+    preshuffled = bool(spec.get("preshuffled", False))
     train_ds, train_dl = _make_loader(
         spec["train_h5"], stage, stage["sample"]["n"], stage["sample"]["seed"],
-        shuffle=not presorted, sequential=presorted,
+        shuffle=not preshuffled, sequential=preshuffled,
     )
     val_dl = None
     if spec.get("val_h5") and spec.get("val_sample"):
