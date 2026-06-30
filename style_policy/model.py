@@ -24,7 +24,9 @@ class BasePolicy(nn.Module):
         d = int(cfg["d_model"])
         enc = BoardEncoder(d_model=d, n_layers=int(cfg["n_layers"]), nhead=int(cfg["nhead"]),
                            dim_feedforward=int(cfg["dim_feedforward"]), dropout=float(cfg["dropout"]),
-                           use_castling_ep=bool(cfg.get("use_castling_ep", False)))
+                           use_castling_ep=bool(cfg.get("use_castling_ep", False)),
+                           use_last_move=bool(cfg.get("use_last_move", False)),
+                           n_history_ply=int(cfg.get("n_history_ply", 4)))
         elo_dim = int(cfg.get("elo_dim", 0))
         n_elo = int(cfg.get("n_elo_buckets", 0))
         h = int(cfg["head_hidden"])
@@ -34,29 +36,29 @@ class BasePolicy(nn.Module):
                    ToHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo, use_cls=use_cls),
                    WDLHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo))
 
-    def encode(self, packed_pre: torch.Tensor):
+    def encode(self, packed_pre: torch.Tensor, hist=None):
         board = packed_to_board_tensor(packed_pre).to(next(self.parameters()).device)
-        return self.encoder(board)
+        return self.encoder(board, hist=hist)
 
-    def forward_from(self, packed_pre, from_legal_u64, *, elo_idx=None):
-        cls, squares = self.encode(packed_pre)
+    def forward_from(self, packed_pre, from_legal_u64, *, elo_idx=None, hist=None):
+        cls, squares = self.encode(packed_pre, hist=hist)
         logits = self.from_head(squares, cls=cls, elo_idx=elo_idx)
         mask = u64_to_mask(from_legal_u64).to(logits.device)
         return logits.masked_fill(~mask, _NEG), mask
 
-    def forward_to(self, packed_pre, from_sq, to_legal_u64, *, elo_idx=None):
-        cls, squares = self.encode(packed_pre)
+    def forward_to(self, packed_pre, from_sq, to_legal_u64, *, elo_idx=None, hist=None):
+        cls, squares = self.encode(packed_pre, hist=hist)
         logits = self.to_head(squares, from_sq, cls=cls, elo_idx=elo_idx)
         mask = u64_to_mask(to_legal_u64).to(logits.device)
         return logits.masked_fill(~mask, _NEG), mask
 
-    def forward_value(self, packed_pre, *, elo_idx=None):
-        cls, _ = self.encode(packed_pre)
+    def forward_value(self, packed_pre, *, elo_idx=None, hist=None):
+        cls, _ = self.encode(packed_pre, hist=hist)
         return self.value_head(cls, elo_idx=elo_idx)
 
-    def forward_policy(self, packed_pre, from_sq, from_legal_u64, to_legal_u64, *, elo_idx=None):
+    def forward_policy(self, packed_pre, from_sq, from_legal_u64, to_legal_u64, *, elo_idx=None, hist=None):
         """Encode once; return (from_logits, from_mask, to_logits, to_mask, value_logits)."""
-        cls, squares = self.encode(packed_pre)
+        cls, squares = self.encode(packed_pre, hist=hist)
         from_logits = self.from_head(squares, cls=cls, elo_idx=elo_idx)
         from_mask = u64_to_mask(from_legal_u64).to(from_logits.device)
         to_logits = self.to_head(squares, from_sq, cls=cls, elo_idx=elo_idx)

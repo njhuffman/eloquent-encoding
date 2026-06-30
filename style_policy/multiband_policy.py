@@ -24,7 +24,9 @@ class MultiBandPolicy(nn.Module):
         d = int(cfg["d_model"]); h = int(cfg["head_hidden"])
         enc = BoardEncoder(d_model=d, n_layers=int(cfg["n_layers"]), nhead=int(cfg["nhead"]),
                            dim_feedforward=int(cfg["dim_feedforward"]), dropout=float(cfg["dropout"]),
-                           use_castling_ep=bool(cfg.get("use_castling_ep", False)))
+                           use_castling_ep=bool(cfg.get("use_castling_ep", False)),
+                           use_last_move=bool(cfg.get("use_last_move", False)),
+                           n_history_ply=int(cfg.get("n_history_ply", 4)))
         bands = list(cfg.get("bands", BANDS))
         use_cls = bool(cfg.get("use_cls_in_heads", False))
         heads = [BandHead(d, h, use_cls=use_cls) for _ in bands]
@@ -32,9 +34,9 @@ class MultiBandPolicy(nn.Module):
                         n_elo_buckets=int(cfg.get("n_elo_buckets", 0)))
         return cls(enc, heads, value, bands=bands)
 
-    def encode(self, packed_pre):
+    def encode(self, packed_pre, hist=None):
         board = packed_to_board_tensor(packed_pre).to(next(self.parameters()).device)
-        return self.encoder(board)
+        return self.encoder(board, hist=hist)
 
     @staticmethod
     def head_index(elo: torch.Tensor) -> torch.Tensor:

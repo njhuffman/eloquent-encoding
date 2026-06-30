@@ -13,12 +13,14 @@ from style_policy.square_categories import NUM_SQUARE_CATEGORIES, square_categor
 
 class BoardEncoder(nn.Module):
     def __init__(self, *, d_model: int, n_layers: int, nhead: int, dim_feedforward: int, dropout: float,
-                 use_castling_ep: bool = False):
+                 use_castling_ep: bool = False, use_last_move: bool = False, n_history_ply: int = 4):
         super().__init__()
         if d_model % nhead != 0:
             raise ValueError("d_model must be divisible by nhead")
         self.d_model = int(d_model)
         self.use_castling_ep = bool(use_castling_ep)
+        self.use_last_move = bool(use_last_move)
+        self.n_history_ply = int(n_history_ply)
         self.piece_emb = nn.Embedding(NUM_SQUARE_CATEGORIES, d_model)
         self.square_emb = nn.Embedding(64, d_model)
         self.turn_cls_emb = nn.Embedding(2, d_model)  # index 0 = black to move, 1 = white
@@ -35,6 +37,15 @@ class BoardEncoder(nn.Module):
             nn.init.zeros_(self.castle_emb.weight)  # zero-init: no-op until trained
             # ep_emb: added at the en-passant square (if any); zero-init for the same reason
             self.ep_emb = nn.Parameter(torch.zeros(d_model))
+        if self.use_last_move:
+            # from_emb[i]: per-ply additive embedding scattered at the from-square
+            # to_emb[i]:   per-ply additive embedding scattered at the to-square
+            # cap_emb:     capture-type embedding (0=none, 1=P, 2=N, 3=B, 4=R, 5=Q)
+            # All zero-init: no-op until trained; additive scatter mirrors castling/ep above.
+            self.from_emb = nn.Parameter(torch.zeros(n_history_ply, d_model))
+            self.to_emb = nn.Parameter(torch.zeros(n_history_ply, d_model))
+            self.cap_emb = nn.Embedding(6, d_model)
+            nn.init.zeros_(self.cap_emb.weight)
 
     def _turn_index(self, board_tensor: torch.Tensor) -> torch.Tensor:
         # Side-to-move plane: index 12 per the codec channel map (1.0 = white to move).
@@ -42,7 +53,7 @@ class BoardEncoder(nn.Module):
         plane = board_tensor[..., 12]
         return (plane.reshape(plane.shape[0], -1).mean(dim=1) > 0.5).long()
 
-    def forward(self, board_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, board_tensor: torch.Tensor, hist=None) -> tuple[torch.Tensor, torch.Tensor]:
         cats = square_categories_from_board_tensor(board_tensor)  # (B,64)
         b = cats.shape[0]
         sq_idx = torch.arange(64, device=cats.device).unsqueeze(0).expand(b, 64)
@@ -58,6 +69,30 @@ class BoardEncoder(nn.Module):
             turn_vec = self.turn_cls_emb(self._turn_index(board_tensor)) + castle  # (B,d)
         else:
             turn_vec = self.turn_cls_emb(self._turn_index(board_tensor))     # (B,d)
+        if self.use_last_move and hist is not None:
+            # hist = (hf, ht, hc), each (B, n_history_ply) int64
+            # Absent ply sentinel = -1; present iff hf[:,i] >= 0.
+            # CRITICAL: never index tok with a negative square index.
+            # Strategy: build a (B,64,d) additive delta tensor; write only present rows.
+            hf, ht, hc = hist
+            d = self.d_model
+            delta = tok.new_zeros(b, 64, d)   # additive contribution, starts at zero
+            for i in range(self.n_history_ply):
+                present = hf[:, i] >= 0  # (B,) bool mask: row has ply i
+                if not present.any():
+                    continue
+                rows = present.nonzero(as_tuple=True)[0]  # indices of present rows
+                # From-square contribution: from_emb[i] added at hf[row, i]
+                from_sq = hf[rows, i]                    # (P,) non-negative squares
+                delta[rows, from_sq] = delta[rows, from_sq] + self.from_emb[i]
+                # To-square contribution: to_emb[i] + cap_emb(hc[row,i]) added at ht[row,i]
+                to_sq = ht[rows, i]                      # (P,) non-negative squares
+                # clamp cap to [0,5] to guard against any out-of-range cap values;
+                # absent rows are already excluded so this is purely defensive.
+                cap_idx = hc[rows, i].clamp(0, 5)
+                to_contrib = self.to_emb[i] + self.cap_emb(cap_idx)  # (P, d)
+                delta[rows, to_sq] = delta[rows, to_sq] + to_contrib
+            tok = tok + delta
         turn = turn_vec.unsqueeze(1)                                         # (B,1,d)
         x = torch.cat([turn, tok], dim=1)  # (B,65,d)
         h = self.encoder(x)
