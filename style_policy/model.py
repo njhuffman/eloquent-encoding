@@ -23,7 +23,8 @@ class BasePolicy(nn.Module):
     def from_config(cls, cfg: dict) -> "BasePolicy":
         d = int(cfg["d_model"])
         enc = BoardEncoder(d_model=d, n_layers=int(cfg["n_layers"]), nhead=int(cfg["nhead"]),
-                           dim_feedforward=int(cfg["dim_feedforward"]), dropout=float(cfg["dropout"]))
+                           dim_feedforward=int(cfg["dim_feedforward"]), dropout=float(cfg["dropout"]),
+                           use_castling_ep=bool(cfg.get("use_castling_ep", False)))
         elo_dim = int(cfg.get("elo_dim", 0))
         n_elo = int(cfg.get("n_elo_buckets", 0))
         h = int(cfg["head_hidden"])

@@ -23,7 +23,8 @@ class MultiBandPolicy(nn.Module):
     def from_config(cls, cfg: dict) -> "MultiBandPolicy":
         d = int(cfg["d_model"]); h = int(cfg["head_hidden"])
         enc = BoardEncoder(d_model=d, n_layers=int(cfg["n_layers"]), nhead=int(cfg["nhead"]),
-                           dim_feedforward=int(cfg["dim_feedforward"]), dropout=float(cfg["dropout"]))
+                           dim_feedforward=int(cfg["dim_feedforward"]), dropout=float(cfg["dropout"]),
+                           use_castling_ep=bool(cfg.get("use_castling_ep", False)))
         bands = list(cfg.get("bands", BANDS))
         heads = [BandHead(d, h) for _ in bands]
         value = WDLHead(d_model=d, hidden=h, elo_dim=int(cfg.get("elo_dim", 0)),
