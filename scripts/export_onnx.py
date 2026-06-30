@@ -25,7 +25,8 @@ def export_fp32(checkpoint_path: str, out_dir, *, policy=None) -> dict:
     if policy is None:
         policy = BasePolicy.from_config(ck["architecture"])
         _loaded = policy.load_state_dict(ck["model"], strict=False)
-        assert not _loaded.unexpected_keys and all(k.startswith("value_head") for k in _loaded.missing_keys), \
+        assert all(k.startswith("promo_head") for k in _loaded.unexpected_keys) and \
+               all(k.startswith("value_head") for k in _loaded.missing_keys), \
             f"checkpoint mismatch: unexpected={_loaded.unexpected_keys} missing={_loaded.missing_keys}"
     enc, fh, th, vh = build_export_modules(policy)
     d = int(ck["architecture"]["d_model"])

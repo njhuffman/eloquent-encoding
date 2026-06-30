@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 from style_policy.board_encoder import BoardEncoder
 from style_policy.policy_heads import FromHead, ToHead
-from style_policy.promotion_head import PromotionHead
 from style_policy.legal_mask import u64_to_mask
 from style_policy.packed_codec import packed_to_board_tensor
 from style_policy.value_head import WDLHead
@@ -13,12 +12,11 @@ _NEG = float("-inf")
 
 
 class BasePolicy(nn.Module):
-    def __init__(self, encoder, from_head, to_head, promo_head, value_head):
+    def __init__(self, encoder, from_head, to_head, value_head):
         super().__init__()
         self.encoder = encoder
         self.from_head = from_head
         self.to_head = to_head
-        self.promo_head = promo_head
         self.value_head = value_head
 
     @classmethod
@@ -32,7 +30,6 @@ class BasePolicy(nn.Module):
         return cls(enc,
                    FromHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo),
                    ToHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo),
-                   PromotionHead(d_model=d),
                    WDLHead(d_model=d, hidden=h, elo_dim=elo_dim, n_elo_buckets=n_elo))
 
     def encode(self, packed_pre: torch.Tensor):

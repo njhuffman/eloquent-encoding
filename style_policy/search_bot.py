@@ -54,7 +54,8 @@ class ExpectimaxBot(Player):
         ck = torch.load(checkpoint, map_location=device)
         self.model = BasePolicy.from_config(ck["architecture"]).to(device)
         _loaded = self.model.load_state_dict(ck["model"], strict=False)
-        assert not _loaded.unexpected_keys and all(k.startswith("value_head") for k in _loaded.missing_keys), \
+        assert all(k.startswith("promo_head") for k in _loaded.unexpected_keys) and \
+               all(k.startswith("value_head") for k in _loaded.missing_keys), \
             f"checkpoint mismatch: unexpected={_loaded.unexpected_keys} missing={_loaded.missing_keys}"
         self.model.eval()
         self.device = device
