@@ -7,10 +7,20 @@ ARCH = {"d_model": 32, "n_layers": 1, "nhead": 4, "dim_feedforward": 64,
 
 ARCH_HIST = dict(ARCH, use_last_move=True, n_history_ply=4)
 
-def test_head_index_mapping():
+def test_head_index_mapping_10_bands():
+    m = MultiBandPolicy.from_config(ARCH)  # default 10 bands 1000-1900
     elo = torch.tensor([950, 1000, 1099, 1100, 1500, 1900, 1999, 2050])
-    idx = MultiBandPolicy.head_index(elo)
-    assert idx.tolist() == [0, 0, 0, 1, 5, 9, 9, 9]
+    idx = m.head_index(elo)
+    assert idx.tolist() == [0, 0, 0, 1, 5, 9, 9, 9]  # unchanged: 2000+ still clamps to top head
+
+
+def test_head_index_mapping_12_bands():
+    arch = dict(ARCH, bands=list(range(1000, 2200, 100)))  # 12 bands 1000-2100
+    m = MultiBandPolicy.from_config(arch)
+    assert m.n_bands == 12 and len(m.heads) == 12
+    elo = torch.tensor([950, 1000, 1999, 2000, 2099, 2100, 2199, 2500])
+    idx = m.head_index(elo)
+    assert idx.tolist() == [0, 0, 9, 10, 10, 11, 11, 11]  # 2000-2099 -> head 10, 2100+ -> head 11
 
 def test_build_and_forward():
     m = MultiBandPolicy.from_config(ARCH)

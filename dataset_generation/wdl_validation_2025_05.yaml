@@ -1,0 +1,31 @@
+# Held-out validation for the 128M training run: 2025-05 ONLY (NOT a training month, so zero
+# train/val game overlap). Replaces wdl_validation_1M.h5 (built from 2025-02 -- now a training
+# month, so reusing it would contaminate validation).
+#
+# 12 bands (matching wdl_history_128M) x take_games=12500 x samples_per_game=8 = 1,200,000 samples.
+# Every 2025-05 cell clears 12500 easily (scarcest = 2100-2199 at 213,438; band census 2026-06-30).
+# The builder emits last-4-ply history automatically, so this val set carries history -> usable for
+# the inference K-sweep (feed the K most-recent plies) as well as plain training-progress metrics.
+name: wdl_validation_2025_05
+
+master_seed: 7
+time_control: 600+0
+bucket_by: white
+skip_opening_plies: 4
+exclude_single_legal_move: false
+
+source_plans:
+  - source: lichess_db_standard_rated_2025-05_tc_600_0.pgn.zst
+    strata:
+      - {elo_min: 1000, elo_max: 1099, take_games: 12500, samples_per_game: 8, stratum_seed: 5001}
+      - {elo_min: 1100, elo_max: 1199, take_games: 12500, samples_per_game: 8, stratum_seed: 5002}
+      - {elo_min: 1200, elo_max: 1299, take_games: 12500, samples_per_game: 8, stratum_seed: 5003}
+      - {elo_min: 1300, elo_max: 1399, take_games: 12500, samples_per_game: 8, stratum_seed: 5004}
+      - {elo_min: 1400, elo_max: 1499, take_games: 12500, samples_per_game: 8, stratum_seed: 5005}
+      - {elo_min: 1500, elo_max: 1599, take_games: 12500, samples_per_game: 8, stratum_seed: 5006}
+      - {elo_min: 1600, elo_max: 1699, take_games: 12500, samples_per_game: 8, stratum_seed: 5007}
+      - {elo_min: 1700, elo_max: 1799, take_games: 12500, samples_per_game: 8, stratum_seed: 5008}
+      - {elo_min: 1800, elo_max: 1899, take_games: 12500, samples_per_game: 8, stratum_seed: 5009}
+      - {elo_min: 1900, elo_max: 1999, take_games: 12500, samples_per_game: 8, stratum_seed: 5010}
+      - {elo_min: 2000, elo_max: 2099, take_games: 12500, samples_per_game: 8, stratum_seed: 5011}
+      - {elo_min: 2100, elo_max: 2199, take_games: 12500, samples_per_game: 8, stratum_seed: 5012}
