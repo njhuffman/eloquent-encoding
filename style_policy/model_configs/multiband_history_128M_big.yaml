@@ -1,0 +1,50 @@
+# BIG weekend run: multiband + last-move history on the full 128M dataset, LARGE encoder.
+# Same data/recipe/flags as multiband_history_128M but the 22M-class encoder (384/12/1536).
+# VRAM verified: fwd+bwd at batch 256 = 2.51 GB / 4.0 (fits comfortably; no batch compromise).
+# ~2.5-3.4x slower per step than the small run -> ~70-95h for the full pass (resumable via --resume;
+# checkpoints + snapshots survive host reboots since the repo is bind-mounted).
+name: multiband_history_128M_big
+checkpoint_dir: style_policy_checkpoints/multiband_history_128M_big
+train_h5: /mnt/eloquence_bulk/databases/wdl_history_128M.h5
+val_h5: /mnt/eloquence_bulk/databases/wdl_validation_2025_05.h5
+val_sample: {n: 10000, seed: 42}
+preshuffled: true
+wandb:
+  project: style_policy
+  mode: online
+architecture:
+  d_model: 384
+  n_layers: 12
+  nhead: 8
+  dim_feedforward: 1536
+  dropout: 0.0
+  head_hidden: 512
+  elo_dim: 32
+  n_elo_buckets: 40
+  use_castling_ep: true
+  use_cls_in_heads: true
+  use_last_move: true
+  n_history_ply: 2
+  bands: [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100]
+defaults:
+  batch_size: 256
+  dataloader_num_workers: 4
+  use_amp: true
+  amp_dtype: bf16
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 50
+  val_interval: 2000
+  checkpoint_interval: 2000
+  lr_schedule: cosine
+  warmup_steps: 2000
+  lr_min_frac: 0.0
+  seed: 0
+  value_loss_weight: 1.0
+  last_move_dropout: 0.15
+  history_dropout: binary
+  snapshot_steps: [62500, 125000, 250000]
+stages:
+  - sample: {n: 123680000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0002}
+    label_smoothing: 0.1
