@@ -28,7 +28,7 @@ architecture:
   use_castling_ep: true
   use_cls_in_heads: true
   use_last_move: true
-  n_history_ply: 4
+  n_history_ply: 2          # 16M K-sweep: history gain saturates at K=2 (K=3/4 add ~0)
   bands: [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100]
 defaults:
   batch_size: 256
@@ -45,7 +45,8 @@ defaults:
   lr_min_frac: 0.0
   seed: 0
   value_loss_weight: 1.0
-  last_move_dropout: 0.25
+  last_move_dropout: 0.15   # binary: 15% of samples see NO history (keeps FEN/puzzle usability)
+  history_dropout: binary   # full-2-ply or none (no intermediate horizons); see 16M K-sweep
 stages:
   - sample: {n: 123680000, seed: 1}
     train: {epochs: 1, learning_rate: 0.0002}

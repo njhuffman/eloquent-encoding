@@ -1,0 +1,49 @@
+# Quick preview / comparison point for the 128M run: SAME architecture as multiband_history_128M
+# (12 bands, history, castling/ep, cls-in-heads), but trained on only the first 16M rows of the
+# globally-shuffled wdl_history_128M.h5. Because the file is pre-shuffled, the first 16M is a uniform
+# IID subset across all 12 bands and all 4 training months -- a true small-data preview of the 128M
+# model, and comparable in scale to prior 16M runs. Trains ~8x faster than the full 128M run.
+# Also end-to-end validates the new pipeline (12-head routing, history, preshuffled sequential reads).
+name: multiband_history_16M
+checkpoint_dir: style_policy_checkpoints/multiband_history_16M
+train_h5: /mnt/eloquence_bulk/databases/wdl_history_128M.h5
+val_h5: /mnt/eloquence_bulk/databases/wdl_validation_2025_05.h5
+val_sample: {n: 10000, seed: 42}
+preshuffled: true
+wandb:
+  project: style_policy
+  mode: online
+architecture:
+  d_model: 256
+  n_layers: 8
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  head_hidden: 512
+  elo_dim: 32
+  n_elo_buckets: 40
+  use_castling_ep: true
+  use_cls_in_heads: true
+  use_last_move: true
+  n_history_ply: 4
+  bands: [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100]
+defaults:
+  batch_size: 256
+  dataloader_num_workers: 4
+  use_amp: true
+  amp_dtype: bf16
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 50
+  val_interval: 2000
+  checkpoint_interval: 2000
+  lr_schedule: cosine
+  warmup_steps: 2000
+  lr_min_frac: 0.0
+  seed: 0
+  value_loss_weight: 1.0
+  last_move_dropout: 0.25
+stages:
+  - sample: {n: 16000000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0002}
+    label_smoothing: 0.1

@@ -87,3 +87,38 @@ def horizon_dropout(
     hist_cap[full_drop] = 0
 
     return hist_from, hist_to, hist_cap
+
+
+def binary_history_dropout(
+    hist_from: torch.Tensor,
+    hist_to: torch.Tensor,
+    hist_cap: torch.Tensor,
+    p: float,
+    gen: torch.Generator | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Binary 'full history or none' dropout: per row, with probability *p* drop ALL plies
+    (set every ply absent: from=-1, to=-1, cap=0); otherwise leave the row unchanged.
+
+    Unlike :func:`horizon_dropout` there are no intermediate horizons — a row is either kept
+    in full or blanked entirely. This matches how history is used at inference (full context
+    when available, none for puzzles/FEN-only) without training robustness to arbitrary K.
+
+    With p=0 the function is a no-op (identity). Modifies in-place and returns the tensors.
+    The dropout mask is sampled with *gen* (for reproducibility in tests).
+    """
+    if p <= 0.0:
+        return hist_from, hist_to, hist_cap
+
+    B = hist_from.shape[0]
+    if p >= 1.0:
+        drop_rows = torch.ones(B, dtype=torch.bool, device=hist_from.device)
+    else:
+        drop_rows = torch.bernoulli(
+            torch.full((B,), p, dtype=torch.float32, device=hist_from.device),
+            generator=gen,
+        ).bool()
+
+    hist_from[drop_rows] = -1
+    hist_to[drop_rows] = -1
+    hist_cap[drop_rows] = 0
+    return hist_from, hist_to, hist_cap
