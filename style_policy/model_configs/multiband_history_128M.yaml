@@ -47,6 +47,9 @@ defaults:
   value_loss_weight: 1.0
   last_move_dropout: 0.15   # binary: 15% of samples see NO history (keeps FEN/puzzle usability)
   history_dropout: binary   # full-2-ply or none (no intermediate horizons); see 16M K-sweep
+  # Step-tagged scale snapshots (batch 256): 62500=16M, 125000=32M, 250000=64M samples seen.
+  # Enables a history K-sweep at each scale from ONE run (final ~483125 steps = 123.68M).
+  snapshot_steps: [62500, 125000, 250000]
 stages:
   - sample: {n: 123680000, seed: 1}
     train: {epochs: 1, learning_rate: 0.0002}

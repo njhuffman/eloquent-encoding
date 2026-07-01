@@ -77,6 +77,17 @@ def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw):
     return tot / max(nb, 1)
 
 
+def _snapshot(model, arch, ckpt_dir, name, step, do_compile):
+    """Write a step-tagged joint checkpoint ({name}.step{step}.pt), loadable directly by
+    MultiBandPolicy.from_config + history_ksweep (carries architecture + bands; compile prefix
+    stripped). Used to capture scale milestones during a single long run for a scaling sweep."""
+    sd = model.state_dict()
+    if do_compile:
+        sd = {k.replace("encoder._orig_mod.", "encoder.", 1): v for k, v in sd.items()}
+    torch.save({"architecture": arch, "bands": model.bands, "model": sd},
+               ckpt_dir / f"{name}.step{step}.pt")
+
+
 def _export(model, arch, ckpt_dir, name, do_compile):
     sd = model.state_dict()
     if do_compile:
@@ -139,6 +150,7 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
     lmd = float(stage.get("last_move_dropout", 0.0))
     dropout_mode = stage.get("history_dropout", "horizon")  # "horizon" (graded) | "binary"
     val_interval = int(stage.get("val_interval", 0)); ckpt_interval = int(stage.get("checkpoint_interval", 0))
+    snapshot_steps = {int(s) for s in stage.get("snapshot_steps", [])}  # step-tagged scale milestones
     print(f"multiband train: {name} steps={total_steps} compile={'on' if do_compile else 'off'}")
     run = _init_wandb(spec, stage, device)
     model.train(); model.encoder  # noqa
@@ -170,6 +182,9 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
             if ckpt_interval and step > 0 and step % ckpt_interval == 0:
                 torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "step": step,
                             "best": best, "scheduler": sched.state_dict() if sched else None}, resume_path)
+            if step in snapshot_steps:
+                _snapshot(model, arch, ckpt_dir, name, step, do_compile)
+                print(f"  [snapshot step={step}] wrote {name}.step{step}.pt", flush=True)
             step += 1
     final_val = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw) if val_dl else float("nan")
     _export(model, arch, ckpt_dir, name, do_compile)
