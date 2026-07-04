@@ -44,7 +44,8 @@ class BotFactory:
                 self._mb[ckpt] = (m, c["architecture"])
             model, arch = self._mb[ckpt]
             return MultiBandBot(ckpt, int(p["band"]), device=self.device,
-                                temperature=float(p.get("temperature", 1.0)), seed=seed, model=model, arch=arch)
+                                temperature=float(p.get("temperature", 1.0)), seed=seed, model=model, arch=arch,
+                                decoding=p.get("decoding", "joint"))
         if t == "maia1":
             from style_policy.maia1_bot import Maia1Bot
             return Maia1Bot(p["weights"], lc0=self.lc0, temperature=float(p.get("temperature", 1.0)),
