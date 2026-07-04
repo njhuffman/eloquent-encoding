@@ -26,7 +26,9 @@ class MultiBandPolicy(nn.Module):
                            dim_feedforward=int(cfg["dim_feedforward"]), dropout=float(cfg["dropout"]),
                            use_castling_ep=bool(cfg.get("use_castling_ep", False)),
                            use_last_move=bool(cfg.get("use_last_move", False)),
-                           n_history_ply=int(cfg.get("n_history_ply", 4)))
+                           n_history_ply=int(cfg.get("n_history_ply", 4)),
+                           use_gab=bool(cfg.get("use_gab", False)),
+                           gab_d1=int(cfg.get("gab_d1", 8)), gab_d2=int(cfg.get("gab_d2", 64)))
         bands = list(cfg.get("bands", BANDS))
         use_cls = bool(cfg.get("use_cls_in_heads", False))
         heads = [BandHead(d, h, use_cls=use_cls) for _ in bands]

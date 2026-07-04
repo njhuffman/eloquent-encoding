@@ -8,16 +8,19 @@ Heads point into the 64 SQUARE tokens (not CLS) — see policy_heads.py.
 from __future__ import annotations
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from style_policy.square_categories import NUM_SQUARE_CATEGORIES, square_categories_from_board_tensor
 
 
 class BoardEncoder(nn.Module):
     def __init__(self, *, d_model: int, n_layers: int, nhead: int, dim_feedforward: int, dropout: float,
-                 use_castling_ep: bool = False, use_last_move: bool = False, n_history_ply: int = 4):
+                 use_castling_ep: bool = False, use_last_move: bool = False, n_history_ply: int = 4,
+                 use_gab: bool = False, gab_d1: int = 8, gab_d2: int = 64):
         super().__init__()
         if d_model % nhead != 0:
             raise ValueError("d_model must be divisible by nhead")
         self.d_model = int(d_model)
+        self.nhead = int(nhead)
         self.use_castling_ep = bool(use_castling_ep)
         self.use_last_move = bool(use_last_move)
         self.n_history_ply = int(n_history_ply)
@@ -46,6 +49,16 @@ class BoardEncoder(nn.Module):
             self.to_emb = nn.Parameter(torch.zeros(n_history_ply, d_model))
             self.cap_emb = nn.Embedding(6, d_model)
             nn.init.zeros_(self.cap_emb.weight)
+        self.use_gab = bool(use_gab)
+        if self.use_gab:
+            # Geometric Attention Bias: dynamic per-head (64x64) attention biases derived from the
+            # board tokens, added to attention logits in every layer (replaces static pos-encoding
+            # in Chessformer; here it AUGMENTS square_emb). gab_proj3 zero-init -> no-op until trained.
+            self.gab_proj1 = nn.Linear(d_model, gab_d1)
+            self.gab_proj2 = nn.Linear(64 * gab_d1, gab_d2)
+            self.gab_ln = nn.LayerNorm(gab_d2)
+            self.gab_proj3 = nn.Linear(gab_d2, self.nhead * 64 * 64)
+            nn.init.zeros_(self.gab_proj3.weight); nn.init.zeros_(self.gab_proj3.bias)
 
     def _turn_index(self, board_tensor: torch.Tensor) -> torch.Tensor:
         # Side-to-move plane: index 12 per the codec channel map (1.0 = white to move).
@@ -95,5 +108,21 @@ class BoardEncoder(nn.Module):
             tok = tok + delta
         turn = turn_vec.unsqueeze(1)                                         # (B,1,d)
         x = torch.cat([turn, tok], dim=1)  # (B,65,d)
-        h = self.encoder(x)
+        if self.use_gab:
+            g = self.gab_proj1(tok).reshape(b, -1)                          # (B, 64*d1)
+            g = self.gab_ln(F.gelu(self.gab_proj2(g)))                      # (B, d2)
+            bias = self.gab_proj3(g).reshape(b, self.nhead, 64, 64)         # (B, h, 64, 64)
+            full = bias.new_zeros(b, self.nhead, 65, 65)                    # CLS row/col get 0 bias
+            full[:, :, 1:, 1:] = bias
+            # PyTorch's fused MHA fast path silently mishandles a batched float attention mask in
+            # eval() (train() already takes the slow path, so this only bites at inference — the
+            # K-sweep and the bot). Force the slow path around the masked call, then restore.
+            _prev_fp = torch.backends.mha.get_fastpath_enabled()
+            torch.backends.mha.set_fastpath_enabled(False)
+            try:
+                h = self.encoder(x, mask=full.reshape(b * self.nhead, 65, 65))  # added to attn logits, all layers
+            finally:
+                torch.backends.mha.set_fastpath_enabled(_prev_fp)
+        else:
+            h = self.encoder(x)
         return h[:, 0], h[:, 1:]  # cls, square_tokens

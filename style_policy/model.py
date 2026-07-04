@@ -26,7 +26,9 @@ class BasePolicy(nn.Module):
                            dim_feedforward=int(cfg["dim_feedforward"]), dropout=float(cfg["dropout"]),
                            use_castling_ep=bool(cfg.get("use_castling_ep", False)),
                            use_last_move=bool(cfg.get("use_last_move", False)),
-                           n_history_ply=int(cfg.get("n_history_ply", 4)))
+                           n_history_ply=int(cfg.get("n_history_ply", 4)),
+                           use_gab=bool(cfg.get("use_gab", False)),
+                           gab_d1=int(cfg.get("gab_d1", 8)), gab_d2=int(cfg.get("gab_d2", 64)))
         elo_dim = int(cfg.get("elo_dim", 0))
         n_elo = int(cfg.get("n_elo_buckets", 0))
         h = int(cfg["head_hidden"])
