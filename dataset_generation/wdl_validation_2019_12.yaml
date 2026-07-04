@@ -1,0 +1,25 @@
+# Maia-era held-out validation (2019-12) for the two-era SOTA comparison. Same 12-band, 1.2M-sample
+# structure as wdl_validation_2025_05 so move-match is directly comparable across eras. 2019 is
+# squarely in Maia's training era: a WIN here (no recency edge for us, Maia's home turf) is the
+# strongest possible result; a loss is ambiguous (Maia likely trained on 2019 + we lack recency).
+name: wdl_validation_2019_12
+master_seed: 7
+time_control: 600+0
+bucket_by: white
+skip_opening_plies: 4
+exclude_single_legal_move: false
+source_plans:
+  - source: lichess_db_standard_rated_2019-12_tc_600_0.pgn.zst
+    strata:
+      - {elo_min: 1000, elo_max: 1099, take_games: 12500, samples_per_game: 8, stratum_seed: 9001}
+      - {elo_min: 1100, elo_max: 1199, take_games: 12500, samples_per_game: 8, stratum_seed: 9002}
+      - {elo_min: 1200, elo_max: 1299, take_games: 12500, samples_per_game: 8, stratum_seed: 9003}
+      - {elo_min: 1300, elo_max: 1399, take_games: 12500, samples_per_game: 8, stratum_seed: 9004}
+      - {elo_min: 1400, elo_max: 1499, take_games: 12500, samples_per_game: 8, stratum_seed: 9005}
+      - {elo_min: 1500, elo_max: 1599, take_games: 12500, samples_per_game: 8, stratum_seed: 9006}
+      - {elo_min: 1600, elo_max: 1699, take_games: 12500, samples_per_game: 8, stratum_seed: 9007}
+      - {elo_min: 1700, elo_max: 1799, take_games: 12500, samples_per_game: 8, stratum_seed: 9008}
+      - {elo_min: 1800, elo_max: 1899, take_games: 12500, samples_per_game: 8, stratum_seed: 9009}
+      - {elo_min: 1900, elo_max: 1999, take_games: 12500, samples_per_game: 8, stratum_seed: 9010}
+      - {elo_min: 2000, elo_max: 2099, take_games: 12500, samples_per_game: 8, stratum_seed: 9011}
+      - {elo_min: 2100, elo_max: 2199, take_games: 12500, samples_per_game: 8, stratum_seed: 9012}

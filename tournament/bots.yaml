@@ -1,0 +1,27 @@
+# Tournament bot registry. `id` is the stable identity (never reuse for a different config).
+# ref_elo = known lichess-RAPID rating (calibration anchors); null = ordinary field member.
+# Anchors: deployed maia bots' lichess-rapid ratings (maia1/5/9 = maia-1100/1500/1900 nets).
+
+# --- calibration anchors (maia1 nets @ nodes=1 = the deployed maia1/5/9 bots) ---
+- {id: maia1_1100, type: maia1, ref_elo: 1564, params: {weights: /mnt/eloquence_bulk/maia1/maia-1100.pb.gz, temperature: 1.0, nodes: 1}}
+- {id: maia1_1500, type: maia1, ref_elo: 1679, params: {weights: /mnt/eloquence_bulk/maia1/maia-1500.pb.gz, temperature: 1.0, nodes: 1}}
+- {id: maia1_1900, type: maia1, ref_elo: 1855, params: {weights: /mnt/eloquence_bulk/maia1/maia-1900.pb.gz, temperature: 1.0, nodes: 1}}
+# --- maia1 field (no published rating; help the fit) ---
+- {id: maia1_1300, type: maia1, ref_elo: null, params: {weights: /mnt/eloquence_bulk/maia1/maia-1300.pb.gz, temperature: 1.0, nodes: 1}}
+- {id: maia1_1700, type: maia1, ref_elo: null, params: {weights: /mnt/eloquence_bulk/maia1/maia-1700.pb.gz, temperature: 1.0, nodes: 1}}
+# --- our final model: band-1500 temperature sweep (the strength curve) + a band contrast ---
+- {id: mb_b1500_t1.0, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 1.0}}
+- {id: mb_b1500_t0.7, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.7}}
+- {id: mb_b1500_t0.5, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.5}}
+- {id: mb_b1500_t0.3, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.3}}
+- {id: mb_b1900_t0.5, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1900, temperature: 0.5}}
+# --- stockfish spread (diverse, cleanly-separated reference) ---
+- {id: sf_skill1, type: stockfish, ref_elo: null, params: {skill_level: 1, depth: 6}}
+- {id: sf_skill4, type: stockfish, ref_elo: null, params: {skill_level: 4, depth: 7}}
+- {id: sf_skill7, type: stockfish, ref_elo: null, params: {skill_level: 7, depth: 8}}
+# --- expectimax search bot (policy proposes + WDL value head scores leaves; on wdl_16M_big) ---
+- {id: expmax_d2, type: expectimax, ref_elo: null, params: {checkpoint: style_policy_checkpoints/wdl_16M_big/wdl_16M_big_stage_1.best.pt, elo: 1500, depth: 2, width: 4}}
+- {id: expmax_d3, type: expectimax, ref_elo: null, params: {checkpoint: style_policy_checkpoints/wdl_16M_big/wdl_16M_big_stage_1.best.pt, elo: 1500, depth: 3, width: 3}}
+# --- high-end Stockfish UCI_Elo anchors (SF's own scale — watch anchor residuals for scale mismatch) ---
+- {id: sf_elo2000, type: stockfish, ref_elo: 2000, params: {elo: 2000, depth: 12}}
+- {id: sf_elo2200, type: stockfish, ref_elo: 2200, params: {elo: 2200, depth: 12}}
