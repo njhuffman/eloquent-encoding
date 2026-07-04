@@ -10,11 +10,11 @@
 - {id: maia1_1300, type: maia1, ref_elo: null, params: {weights: /mnt/eloquence_bulk/maia1/maia-1300.pb.gz, temperature: 1.0, nodes: 1}}
 - {id: maia1_1700, type: maia1, ref_elo: null, params: {weights: /mnt/eloquence_bulk/maia1/maia-1700.pb.gz, temperature: 1.0, nodes: 1}}
 # --- our final model: band-1500 temperature sweep (the strength curve) + a band contrast ---
-- {id: mb_b1500_t1.0, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 1.0}}
-- {id: mb_b1500_t0.7, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.7}}
-- {id: mb_b1500_t0.5, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.5}}
-- {id: mb_b1500_t0.3, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.3}}
-- {id: mb_b1900_t0.5, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1900, temperature: 0.5}}
+- {id: mb_b1500_t1.0, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 1.0, decoding: factored}}
+- {id: mb_b1500_t0.7, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.7, decoding: factored}}
+- {id: mb_b1500_t0.5, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.5, decoding: factored}}
+- {id: mb_b1500_t0.3, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.3, decoding: factored}}
+- {id: mb_b1900_t0.5, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1900, temperature: 0.5, decoding: factored}}
 # --- stockfish spread (diverse, cleanly-separated reference) ---
 - {id: sf_skill1, type: stockfish, ref_elo: null, params: {skill_level: 1, depth: 6}}
 - {id: sf_skill4, type: stockfish, ref_elo: null, params: {skill_level: 4, depth: 7}}
@@ -25,3 +25,9 @@
 # --- high-end Stockfish UCI_Elo anchors (SF's own scale — watch anchor residuals for scale mismatch) ---
 - {id: sf_elo2000, type: stockfish, ref_elo: 2000, params: {elo: 2000, depth: 12}}
 - {id: sf_elo2200, type: stockfish, ref_elo: 2200, params: {elo: 2200, depth: 12}}
+# --- JOINT-decoding fix (P(from)*P(to|from), temperature on the joint) — corrected bots ---
+- {id: mb2_b1500_t1.0, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 1.0, decoding: joint}}
+- {id: mb2_b1500_t0.7, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.7, decoding: joint}}
+- {id: mb2_b1500_t0.5, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.5, decoding: joint}}
+- {id: mb2_b1500_t0.3, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1500, temperature: 0.3, decoding: joint}}
+- {id: mb2_b1900_t0.5, type: multiband, ref_elo: null, params: {checkpoint: style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt, band: 1900, temperature: 0.5, decoding: joint}}

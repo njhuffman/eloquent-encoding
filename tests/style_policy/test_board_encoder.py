@@ -30,3 +30,22 @@ def test_turn_changes_encoding():
         cls_a, _ = enc(a)
         cls_b, _ = enc(b)
     assert not torch.allclose(cls_a, cls_b), "CLS should differ when side-to-move changes"
+
+
+def test_gab_eval_matches_train():
+    # Regression: with GAB, PyTorch's fused MHA fast path silently mishandles the batched
+    # float attention mask in eval() while train() takes the slow path -> the two modes
+    # diverged and inference (K-sweep, bot) got garbage. With dropout=0 the modes must be
+    # numerically identical; board_encoder forces the slow path when use_gab to guarantee it.
+    enc = BoardEncoder(d_model=64, n_layers=2, nhead=4, dim_feedforward=128, dropout=0.0,
+                       use_gab=True).eval()
+    # non-trivial GAB weights so the mask actually bites (proj3 is zero-init = no-op otherwise)
+    with torch.no_grad():
+        enc.gab_proj3.weight.normal_(0, 0.02)
+        enc.gab_proj3.bias.normal_(0, 0.02)
+    boards = _boards(4)
+    with torch.no_grad():
+        enc.eval();  cls_eval, sq_eval = enc(boards)
+        enc.train(); cls_train, sq_train = enc(boards)
+    assert torch.allclose(cls_eval, cls_train, atol=1e-5), "GAB eval() diverged from train()"
+    assert torch.allclose(sq_eval, sq_train, atol=1e-5), "GAB eval() diverged from train()"

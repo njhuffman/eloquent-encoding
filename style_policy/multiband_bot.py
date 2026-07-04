@@ -37,7 +37,8 @@ def board_history(board: chess.Board, n_ply: int) -> tuple[list[int], list[int],
 
 class MultiBandBot(Player):
     def __init__(self, checkpoint, elo: int, *, device: str = "cpu", temperature: float = 1.0,
-                 seed=None, opening_book=None, book_threshold: float = 0.01, model=None, arch=None):
+                 seed=None, opening_book=None, book_threshold: float = 0.01, model=None, arch=None,
+                 decoding: str = "joint"):
         if model is not None:               # share a pre-loaded model (avoids N GPU copies)
             self.model = model; self.arch = arch
         else:
@@ -50,6 +51,7 @@ class MultiBandBot(Player):
         self.elo = int(elo)
         self.device = device
         self.temperature = float(temperature)
+        self.decoding = decoding  # "joint" (P(from)*P(to|from), temp on the joint) | "factored" (legacy)
         self.gen = torch.Generator(device=device).manual_seed(seed if seed is not None else 0)
         self.opening_book = opening_book
         self.book_threshold = float(book_threshold)
@@ -75,10 +77,33 @@ class MultiBandBot(Player):
                     torch.tensor([hc], device=self.device))
         cls, squares = self.model.encode(pk, hist=hist)
         head = self.model.heads[self.g]
-        from_sq = self._sample(head.from_logits(squares, cls), legal_from_u64(board))
-        to_logits = head.to_logits(squares, torch.tensor([from_sq], device=self.device), cls)
-        to_sq = self._sample(to_logits, legal_to_u64(board, from_sq))
-        mv = chess.Move(from_sq, to_sq)
-        if mv not in board.legal_moves:
-            mv = chess.Move(from_sq, to_sq, promotion=chess.QUEEN)
-        return mv
+        if self.decoding == "factored":  # legacy: argmax/sample from, then to|from (per-factor temp)
+            from_sq = self._sample(head.from_logits(squares, cls), legal_from_u64(board))
+            to_logits = head.to_logits(squares, torch.tensor([from_sq], device=self.device), cls)
+            to_sq = self._sample(to_logits, legal_to_u64(board, from_sq))
+            mv = chess.Move(from_sq, to_sq)
+            if mv not in board.legal_moves:
+                mv = chess.Move(from_sq, to_sq, promotion=chess.QUEEN)
+            return mv
+        # joint: sample/argmax over legal MOVES by P(from)*P(to|from), temperature on the joint.
+        by_ft: dict = {}  # (from,to) -> move; heads don't model promo piece, so prefer queen
+        for m in board.legal_moves:
+            k = (m.from_square, m.to_square)
+            if k not in by_ft or m.promotion == chess.QUEEN:
+                by_ft[k] = m
+        moves = list(by_ft.values())
+        if len(moves) == 1:
+            return moves[0]
+        froms = sorted({f for f, _ in by_ft}); fidx = {f: i for i, f in enumerate(froms)}
+        pfrom = torch.softmax(head.from_logits(squares, cls)[0][froms], dim=-1)
+        tl = head.to_logits(squares.expand(len(froms), -1, -1),
+                            torch.tensor(froms, device=self.device), cls.expand(len(froms), -1))
+        tos_by_from: dict = {}
+        for (f, t) in by_ft:
+            tos_by_from.setdefault(f, []).append(t)
+        pto = {f: torch.softmax(tl[fidx[f]][tos_by_from[f]], dim=-1) for f in froms}
+        joint = torch.tensor(
+            [float(pfrom[fidx[m.from_square]]) * float(pto[m.from_square][tos_by_from[m.from_square].index(m.to_square)])
+             for m in moves], device=self.device)
+        p = torch.softmax(torch.log(joint.clamp_min(1e-12)) / self.temperature, dim=-1)
+        return moves[int(torch.multinomial(p, 1, generator=self.gen).item())]
