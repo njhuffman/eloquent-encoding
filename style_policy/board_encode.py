@@ -65,6 +65,14 @@ def legal_from_u64(board: chess.Board) -> int:
     return bb
 
 
+def legal_move_matrix(board: chess.Board) -> np.ndarray:
+    """(64,64) bool: [from,to]=True iff some legal move goes from->to (promo piece ignored)."""
+    m = np.zeros((64, 64), dtype=bool)
+    for mv in board.legal_moves:
+        m[mv.from_square, mv.to_square] = True
+    return m
+
+
 def legal_to_u64(board: chess.Board, from_sq: int) -> int:
     bb = 0
     for mv in board.legal_moves:
