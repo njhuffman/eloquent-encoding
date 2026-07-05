@@ -32,10 +32,12 @@ def joint_ce(logits, from_sq, to_sq, legal_mat, label_smoothing: float = 0.0):
     Mirrors style_policy.loss.masked_square_ce's label-smoothing handling: illegal pairs
     are excluded from the softmax (-inf) AND from the smoothing mass. Plain
     ``F.cross_entropy(label_smoothing=...)`` would spread eps/4096 mass onto the -inf
-    illegal entries too, giving ``eps * -inf = inf``.
+    illegal entries too, giving ``eps * -inf = inf``. Rows with no legal move are dropped
+    (they would make log_softmax NaN), matching masked_square_ce's ``valid`` handling.
     """
     b = logits.shape[0]
     legal_flat = legal_mat.view(b, -1)
+    valid = legal_flat.any(dim=-1)  # rows with >=1 legal move; all-illegal rows -> NaN otherwise
     flat = logits.masked_fill(~legal_mat, float("-inf")).view(b, -1)
     target = (from_sq.long() * 64 + to_sq.long())
     logp = torch.nn.functional.log_softmax(flat, dim=-1)
@@ -47,4 +49,5 @@ def joint_ce(logits, from_sq, to_sq, legal_mat, label_smoothing: float = 0.0):
         per_row = (1.0 - label_smoothing) * nll + label_smoothing * smooth
     else:
         per_row = nll
-    return per_row.mean()
+    per_row = torch.where(valid, per_row, torch.zeros_like(per_row))  # zero-out all-illegal rows
+    return per_row.sum() / valid.sum().clamp(min=1)

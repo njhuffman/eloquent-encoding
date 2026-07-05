@@ -52,3 +52,15 @@ def test_joint_ce_label_smoothing_stays_finite():
     fr = torch.tensor([8, 1]); to = torch.tensor([16, 18])
     loss = joint_ce(logits, fr, to, legal, label_smoothing=0.1)
     assert torch.isfinite(loss)
+
+
+def test_joint_ce_all_illegal_row_is_finite():
+    # A row with zero legal moves would make log_softmax NaN; such rows must be dropped
+    # (matches masked_square_ce). Row 0 has a legal move, row 1 has none.
+    h = PointerHead(d_model=32, use_cls=False)
+    logits = h(torch.randn(2, 64, 32), None)
+    legal = torch.zeros(2, 64, 64, dtype=torch.bool)
+    legal[0, 8, 16] = True  # row 1 left all-illegal
+    fr = torch.tensor([8, 0]); to = torch.tensor([16, 0])
+    for ls in (0.0, 0.1):
+        assert torch.isfinite(joint_ce(logits, fr, to, legal, label_smoothing=ls))
