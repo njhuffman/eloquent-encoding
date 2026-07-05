@@ -27,7 +27,24 @@ class PointerHead(nn.Module):
         return torch.einsum("bihd,bjhd->bij", q, k) * self.scale   # (B,64,64)
 
 def joint_ce(logits, from_sq, to_sq, legal_mat, label_smoothing: float = 0.0):
+    """Joint cross-entropy over legal (from,to) pairs only.
+
+    Mirrors style_policy.loss.masked_square_ce's label-smoothing handling: illegal pairs
+    are excluded from the softmax (-inf) AND from the smoothing mass. Plain
+    ``F.cross_entropy(label_smoothing=...)`` would spread eps/4096 mass onto the -inf
+    illegal entries too, giving ``eps * -inf = inf``.
+    """
     b = logits.shape[0]
+    legal_flat = legal_mat.view(b, -1)
     flat = logits.masked_fill(~legal_mat, float("-inf")).view(b, -1)
     target = (from_sq.long() * 64 + to_sq.long())
-    return torch.nn.functional.cross_entropy(flat, target, label_smoothing=label_smoothing)
+    logp = torch.nn.functional.log_softmax(flat, dim=-1)
+    nll = -logp.gather(1, target[:, None]).squeeze(1)
+    if label_smoothing > 0.0:
+        n_legal = legal_flat.sum(dim=-1).clamp(min=1)
+        logp_legal = torch.where(legal_flat, logp, torch.zeros_like(logp))  # drop -inf before summing
+        smooth = -(logp_legal.sum(dim=-1) / n_legal)
+        per_row = (1.0 - label_smoothing) * nll + label_smoothing * smooth
+    else:
+        per_row = nll
+    return per_row.mean()

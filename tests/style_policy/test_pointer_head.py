@@ -40,3 +40,15 @@ def test_joint_ce_masks_and_runs():
     flat = logits.masked_fill(~legal, float("-inf")).view(2, -1)
     idx = flat.argmax(-1)
     assert bool(legal[0, idx[0] // 64, idx[0] % 64]) and bool(legal[1, idx[1] // 64, idx[1] % 64])
+
+def test_joint_ce_label_smoothing_stays_finite():
+    # Regression: label smoothing must be restricted to legal (from,to) pairs only, not
+    # spread over all 4096 -- else eps * -inf = inf (same pitfall as masked_square_ce).
+    h = PointerHead(d_model=32, use_cls=False)
+    sq = torch.randn(2, 64, 32)
+    logits = h(sq, None)
+    legal = torch.zeros(2, 64, 64, dtype=torch.bool)
+    legal[0, 8, 16] = True; legal[0, 8, 24] = True; legal[1, 1, 18] = True
+    fr = torch.tensor([8, 1]); to = torch.tensor([16, 18])
+    loss = joint_ce(logits, fr, to, legal, label_smoothing=0.1)
+    assert torch.isfinite(loss)
