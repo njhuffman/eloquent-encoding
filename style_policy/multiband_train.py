@@ -105,6 +105,33 @@ def _export(model, arch, ckpt_dir, name, do_compile):
                     "source_checkpoint": str(enc_path), "band": int(b)}, hd / f"{name}_band_{b}.pt")
 
 
+def _load_encoder_weights(model, ckpt_path, device) -> int:
+    """Warm-start: copy ONLY encoder.* tensors from a checkpoint into `model`, leaving heads +
+    value head at their fresh init. Strips a possible torch.compile prefix so keys match the
+    (uncompiled) fresh model. Returns the number of encoder tensors loaded."""
+    sd = torch.load(ckpt_path, map_location=device)["model"]
+    enc_sd = {k.replace("encoder._orig_mod.", "encoder.", 1): v
+              for k, v in sd.items() if k.startswith("encoder.")}
+    model.load_state_dict(enc_sd, strict=False)  # strict=False: heads/value_head keys are absent
+    return len(enc_sd)
+
+
+def _freeze_encoder(model) -> int:
+    """Freeze the encoder in place (requires_grad=False on every encoder param).
+    Returns the number of param tensors frozen."""
+    n = 0
+    for p in model.encoder.parameters():
+        p.requires_grad_(False)
+        n += 1
+    return n
+
+
+def _trainable_params(model):
+    """Params to hand the optimizer: only those with requires_grad. With nothing frozen this is
+    exactly model.parameters() in the same order (backward-compatible)."""
+    return [p for p in model.parameters() if p.requires_grad]
+
+
 def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
     stage = spec["stages"][0]; arch = spec["architecture"]; n_elo = int(arch["n_elo_buckets"])
     name = spec["name"]; ckpt_dir = Path(spec["checkpoint_dir"]); ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -112,7 +139,19 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
     if device == "cuda":
         torch.set_float32_matmul_precision("high")
     model = MultiBandPolicy.from_config(arch).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=stage["train"]["learning_rate"],
+    # Warm-start the encoder from an existing checkpoint (generic-encoder experiment). Only on a
+    # fresh run: when resuming, encoder weights come from resume.pt instead.
+    init_encoder_from = spec.get("init_encoder_from")
+    if init_encoder_from and not resume:
+        n_enc = _load_encoder_weights(model, init_encoder_from, device)
+        print(f"init_encoder_from: loaded {n_enc} encoder tensors from {init_encoder_from}", flush=True)
+    # Freeze the encoder so only heads + value head train (applies on fresh and resumed runs so a
+    # resumed frozen run stays frozen). The optimizer is then built over trainable params only.
+    freeze_encoder = bool(spec.get("freeze_encoder", False))
+    if freeze_encoder:
+        n_frozen = _freeze_encoder(model)
+        print(f"freeze_encoder: froze {n_frozen} encoder param tensors", flush=True)
+    opt = torch.optim.AdamW(_trainable_params(model), lr=stage["train"]["learning_rate"],
                             weight_decay=stage["weight_decay"], fused=(device == "cuda"))
     preshuffled = bool(spec.get("preshuffled", False))
     ds = PackedMoveDataset(spec["train_h5"], sample_n=stage["sample"]["n"],
