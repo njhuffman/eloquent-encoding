@@ -1,0 +1,33 @@
+# 16M BLITZ training set (2024-01, 180+0), 12 bands (1000-2199), last-move history (auto-emitted) + WDL.
+# Purpose: Maia-3 parity experiment — train on blitz (Maia-3's home TC) so we can compare on the
+# Allie 2022 blitz test set at equal footing (our current models are rapid-trained = OOD on blitz).
+# Month 2024-01 chosen to avoid contamination: != 2022 (Allie test set) and != 2025-05 (our rapid val),
+# and inside Maia-3's 2023-2025 training window.
+# Sizing: band_census on this file shows every band >= 184,983 games (scarcest = 1000-1099), all >= the
+# 167,000 target -> take_games=167000 x 12 bands x 8 samples = 16.03M, evenly balanced, no under-fill.
+# NOTE (Phase 1): no <30s-clock filter yet (miner doesn't parse [%clk]); Maia-3 drops time-scramble
+# positions in training, so a clock filter is a Phase-2 refinement if this run falls short.
+name: wdl_blitz_16M
+
+master_seed: 1
+time_control: 180+0
+bucket_by: white
+skip_opening_plies: 4
+exclude_single_legal_move: false
+min_clock_seconds: 30   # drop time-scramble positions (mover <30s), matching Maia-3 train + Allie eval
+
+source_plans:
+  - source: lichess_db_standard_rated_2024-01_tc_180_0.pgn.zst
+    strata:
+      - {elo_min: 1000, elo_max: 1099, take_games: 167000, samples_per_game: 8, stratum_seed: 1001}
+      - {elo_min: 1100, elo_max: 1199, take_games: 167000, samples_per_game: 8, stratum_seed: 1002}
+      - {elo_min: 1200, elo_max: 1299, take_games: 167000, samples_per_game: 8, stratum_seed: 1003}
+      - {elo_min: 1300, elo_max: 1399, take_games: 167000, samples_per_game: 8, stratum_seed: 1004}
+      - {elo_min: 1400, elo_max: 1499, take_games: 167000, samples_per_game: 8, stratum_seed: 1005}
+      - {elo_min: 1500, elo_max: 1599, take_games: 167000, samples_per_game: 8, stratum_seed: 1006}
+      - {elo_min: 1600, elo_max: 1699, take_games: 167000, samples_per_game: 8, stratum_seed: 1007}
+      - {elo_min: 1700, elo_max: 1799, take_games: 167000, samples_per_game: 8, stratum_seed: 1008}
+      - {elo_min: 1800, elo_max: 1899, take_games: 167000, samples_per_game: 8, stratum_seed: 1009}
+      - {elo_min: 1900, elo_max: 1999, take_games: 167000, samples_per_game: 8, stratum_seed: 1010}
+      - {elo_min: 2000, elo_max: 2099, take_games: 167000, samples_per_game: 8, stratum_seed: 1011}
+      - {elo_min: 2100, elo_max: 2199, take_games: 167000, samples_per_game: 8, stratum_seed: 1012}

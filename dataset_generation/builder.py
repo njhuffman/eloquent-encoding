@@ -46,6 +46,17 @@ def _game_matches_time_control(game: chess.pgn.Game, required: str | None) -> bo
     return tc == required
 
 
+def _base_seconds_from_time_control(tc: str | None) -> int | None:
+    """Base clock in seconds from a ``"base+inc"`` time control (e.g. "180+0" -> 180)."""
+    if not tc:
+        return None
+    head = tc.split("+", 1)[0].strip()
+    try:
+        return int(head)
+    except ValueError:
+        return None
+
+
 def _rng_for_game(
     master_seed: int,
     source_plan_index: int,
@@ -135,6 +146,7 @@ def _process_one_source_plan(
     ``take_games``. Raises if EOF arrives before every quota is met."""
     strata = plan.strata
     accepted = [0] * len(strata)
+    base_seconds = _base_seconds_from_time_control(recipe.time_control)
     path = resolve_source_file(data_dir, plan.source)
     try:
         raw = open(path, "rb")
@@ -167,6 +179,8 @@ def _process_one_source_plan(
                 game,
                 skip_opening_plies=recipe.skip_opening_plies,
                 exclude_single_legal_move=recipe.exclude_single_legal_move,
+                min_clock_seconds=recipe.min_clock_seconds,
+                base_seconds=base_seconds,
             )
 
             for s, st in enumerate(strata):

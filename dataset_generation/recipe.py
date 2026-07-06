@@ -37,6 +37,7 @@ class Recipe:
     skip_opening_plies: int
     exclude_single_legal_move: bool
     source_plans: tuple[SourcePlan, ...]
+    min_clock_seconds: int = 0
 
     def target_sample_rows(self) -> int:
         """
@@ -122,6 +123,10 @@ class Recipe:
         if bb not in ("white", "black", "both"):
             raise ValueError(f"bucket_by must be white|black|both, got {bb!r}")
 
+        mcs = int(d.get("min_clock_seconds", 0))
+        if mcs < 0:
+            raise ValueError(f"min_clock_seconds must be >= 0, got {mcs}")
+
         raw_plans = d.get("source_plans")
         if raw_plans is None:
             raise KeyError(
@@ -156,6 +161,7 @@ class Recipe:
             skip_opening_plies=int(d["skip_opening_plies"]),
             exclude_single_legal_move=bool(d["exclude_single_legal_move"]),
             source_plans=tuple(plans),
+            min_clock_seconds=mcs,
         )
 
     @staticmethod
