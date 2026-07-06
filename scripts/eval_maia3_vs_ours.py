@@ -46,7 +46,7 @@ def _band_of(self_elo: int) -> int | None:
     return int(min(2100, max(1000, (self_elo // 100) * 100)))
 
 
-def sample_positions(pgn_path, per_band, min_ply, seed, max_per_game=3):
+def sample_positions(pgn_path, per_band, min_ply, seed, max_per_game=3, time_controls=None):
     """Iterate games, collecting up to `per_band` balanced samples per band.
 
     Each sample carries a board copied WITH its move stack (so both models see history),
@@ -63,6 +63,8 @@ def sample_positions(pgn_path, per_band, min_ply, seed, max_per_game=3):
             game = chess.pgn.read_game(text)
             if game is None:
                 break  # PGN exhausted
+            if time_controls is not None and game.headers.get("TimeControl") not in time_controls:
+                continue  # keep only the requested time controls (e.g. blitz)
             try:
                 white_elo = int(game.headers.get("WhiteElo", ""))
                 black_elo = int(game.headers.get("BlackElo", ""))
@@ -166,12 +168,15 @@ def main():
     ap.add_argument("--per-band", type=int, default=200)
     ap.add_argument("--min-ply", type=int, default=8)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--time-controls", default=None,
+                    help="comma-separated TimeControl headers to keep (e.g. 180+0,300+0); default = all")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
+    tcs = set(args.time_controls.split(",")) if args.time_controls else None
     print(f"[1/4] Sampling up to {args.per_band}/band from {args.pgn} "
-          f"(min_ply={args.min_ply}, seed={args.seed}) ...", flush=True)
-    samples, counts = sample_positions(args.pgn, args.per_band, args.min_ply, args.seed)
+          f"(min_ply={args.min_ply}, seed={args.seed}, time_controls={tcs or 'all'}) ...", flush=True)
+    samples, counts = sample_positions(args.pgn, args.per_band, args.min_ply, args.seed, time_controls=tcs)
     print(f"      got {len(samples)} samples total. Per-band counts:", flush=True)
     for b in BANDS:
         flag = "" if counts[b] >= args.per_band else "  (UNDER-FILLED)"
