@@ -14,6 +14,7 @@ time_control: 180+0
 bucket_by: white
 skip_opening_plies: 4
 exclude_single_legal_move: false
+min_clock_seconds: 30   # drop time-scramble positions (mover <30s), matching Maia-3 train + Allie eval
 
 source_plans:
   - source: lichess_db_standard_rated_2024-01_tc_180_0.pgn.zst
