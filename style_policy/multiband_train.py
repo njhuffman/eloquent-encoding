@@ -39,8 +39,34 @@ def _routed_policy_loss(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask,
     return fl / B, tl / B
 
 
+def masked_square_softce(logits, target, mask):
+    """Soft cross-entropy: -sum_sq target(sq) * log_softmax(masked logits)(sq), mean over batch.
+    `target` is a probability vector over the 64 squares (0 on illegal squares)."""
+    logits = logits.masked_fill(~mask, float("-inf"))
+    logp = torch.log_softmax(logits, dim=-1).float()
+    target = target.float()
+    contrib = target * logp
+    contrib = torch.where(target > 0, contrib, torch.zeros_like(contrib))  # avoid 0*-inf = nan
+    return -contrib.sum(-1).mean()
+
+
+def _routed_distill_loss(model, cls, squares, hidx, from_sq, maia_from, maia_to, fmask, tmask):
+    """Factored KL-to-Maia-3: match Maia-3's P(from) with the from-head, and its P(to|true-from)
+    with the to-head conditioned on the true human from (same conditioning as CE training)."""
+    B = squares.shape[0]
+    fl = squares.new_zeros(()); tl = squares.new_zeros(())
+    for g in range(model.n_bands):
+        m = hidx == g; k = int(m.sum())
+        if k == 0:
+            continue
+        sq = squares[m]; cl = cls[m]
+        fl = fl + masked_square_softce(model.heads[g].from_logits(sq, cl), maia_from[m], fmask[m]) * k
+        tl = tl + masked_square_softce(model.heads[g].to_logits(sq, from_sq[m], cl), maia_to[m], tmask[m]) * k
+    return fl / B, tl / B
+
+
 def _step(model, batch, device, n_elo, ls, vlw, last_move_dropout: float = 0.0,
-          dropout_mode: str = "horizon"):
+          dropout_mode: str = "horizon", distill: bool = False):
     packed = batch["packed_pre"].to(device)
     elo = batch["elo_to_move"]
     hidx = model.head_index(elo).to(device)
@@ -60,17 +86,21 @@ def _step(model, batch, device, n_elo, ls, vlw, last_move_dropout: float = 0.0,
     else:
         hist = None
     cls, squares = model.encode(packed, hist=hist)
-    fl, tl = _routed_policy_loss(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask, ls)
+    if distill:
+        maia_from = batch["maia_from"].to(device); maia_to = batch["maia_to"].to(device)
+        fl, tl = _routed_distill_loss(model, cls, squares, hidx, from_sq, maia_from, maia_to, fmask, tmask)
+    else:
+        fl, tl = _routed_policy_loss(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask, ls)
     vl = wdl_ce(model.value_head(cls, elo_idx=elo_to_bucket(elo, n_elo).to(device)), result)
     return fl + tl + vlw * vl, {"from_ce": float(fl), "to_ce": float(tl), "wdl_ce": float(vl)}
 
 
 @torch.no_grad()
-def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw):
+def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw, distill: bool = False):
     was = model.training; model.eval(); tot = 0.0; nb = 0
     for batch in val_dl:
         with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
-            loss, m = _step(model, batch, device, n_elo, 0.0, vlw, last_move_dropout=0.0)
+            loss, m = _step(model, batch, device, n_elo, 0.0, vlw, last_move_dropout=0.0, distill=distill)
         tot += m["from_ce"] + m["to_ce"]; nb += 1
     if was:
         model.train()
@@ -186,6 +216,9 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
             sched.load_state_dict(st["scheduler"])
 
     ls = stage.get("label_smoothing", 0.0); vlw = stage.get("value_loss_weight", 1.0)
+    distill = bool(spec.get("distill", False))
+    if distill:
+        print("DISTILL mode: factored KL to Maia-3 soft targets (maia_from / maia_to)", flush=True)
     lmd = float(stage.get("last_move_dropout", 0.0))
     dropout_mode = stage.get("history_dropout", "horizon")  # "horizon" (graded) | "binary"
     val_interval = int(stage.get("val_interval", 0)); ckpt_interval = int(stage.get("checkpoint_interval", 0))
@@ -199,7 +232,7 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
                 break
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
                 loss, m = _step(model, batch, device, n_elo, ls, vlw, last_move_dropout=lmd,
-                                dropout_mode=dropout_mode)
+                                dropout_mode=dropout_mode, distill=distill)
             if not torch.isfinite(loss):
                 raise RuntimeError(f"non-finite loss at step {step}")
             opt.zero_grad(set_to_none=True); loss.backward()
@@ -213,7 +246,7 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
                     run.log({"train/from_ce": m["from_ce"], "train/to_ce": m["to_ce"],
                              "train/wdl_ce": m["wdl_ce"], "lr": opt.param_groups[0]["lr"]}, step=step)
             if val_dl is not None and val_interval and step > 0 and step % val_interval == 0:
-                v = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw)
+                v = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw, distill=distill)
                 print(f"  [val step={step}] from+to_ce={v:.4f}", flush=True)
                 best = min(best, v)
                 if run is not None:
@@ -225,7 +258,7 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
                 _snapshot(model, arch, ckpt_dir, name, step, do_compile)
                 print(f"  [snapshot step={step}] wrote {name}.step{step}.pt", flush=True)
             step += 1
-    final_val = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw) if val_dl else float("nan")
+    final_val = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw, distill=distill) if val_dl else float("nan")
     _export(model, arch, ckpt_dir, name, do_compile)
     print(f"saved {ckpt_dir}/{name}.pt + encoder + per-band heads; final_val={final_val:.4f}")
     if run is not None:

@@ -27,6 +27,8 @@ class PackedMoveDataset(Dataset):
                 pool = np.arange(n)
             # Detect history columns once at construction time (not per-row).
             self._has_hist: bool = "hist_from" in f
+            # Detect Maia-3 soft-target columns (distillation label sets only).
+            self._has_soft: bool = "maia_from" in f
         if sample_n is not None and sample_n < len(pool):
             if sequential:
                 # Pre-shuffled-on-disk file: take the first N in order (zero random reads).
@@ -68,6 +70,10 @@ class PackedMoveDataset(Dataset):
             out["hist_from"] = torch.full((_HIST_LEN,), _HIST_ABSENT_SQ,  dtype=torch.int64)
             out["hist_to"]   = torch.full((_HIST_LEN,), _HIST_ABSENT_SQ,  dtype=torch.int64)
             out["hist_cap"]  = torch.full((_HIST_LEN,), _HIST_ABSENT_CAP, dtype=torch.int64)
+        # Optional Maia-3 soft targets (P(from) and P(to|true-from), 64-vectors) for distillation.
+        if self._has_soft:
+            out["maia_from"] = torch.from_numpy(f["maia_from"][idx].astype(np.float32))
+            out["maia_to"]   = torch.from_numpy(f["maia_to"][idx].astype(np.float32))
         return out
 
     @staticmethod
