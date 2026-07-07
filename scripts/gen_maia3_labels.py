@@ -17,8 +17,8 @@ from style_policy.packed_codec import PACKED_BOARD_LEN
 from maia3.uci import parse_args as m3_parse_args, Maia3UCIEngine
 from maia3.dataset import tokenize_board, get_historical_tokens, get_legal_moves_mask
 
-BANDS = list(range(1000, 2200, 100))
-def band_of(elo): return None if (elo < 1000 or elo >= 2200) else int(min(2100, max(1000, (elo // 100) * 100)))
+BANDS = list(range(1000, 2000, 100))  # 10 bands; elo [1000,2000) = within Maia-3's trained range
+def band_of(elo): return None if (elo < 1000 or elo >= 2000) else int((elo // 100) * 100)
 _NEG = float("-inf")
 
 
