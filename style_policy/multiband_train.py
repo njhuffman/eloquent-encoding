@@ -65,8 +65,27 @@ def _routed_distill_loss(model, cls, squares, hidx, from_sq, maia_from, maia_to,
     return fl / B, tl / B
 
 
+@torch.no_grad()
+def _routed_human_metrics(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask):
+    """Hard human-move CE (from+to) + joint top-1 move-match vs the TRUE human move, for ANY
+    training objective. Lets the distill and human runs log a directly comparable curve
+    (train/from_ce differs between them since distill's is soft-CE-to-Maia-3)."""
+    B = squares.shape[0]; ce = 0.0; match = 0; NEG = float("-inf")
+    for g in range(model.n_bands):
+        mm = hidx == g; k = int(mm.sum())
+        if k == 0:
+            continue
+        sq = squares[mm]; cl = cls[mm]; fsq = from_sq[mm]; tsq = to_sq[mm]
+        fl = model.heads[g].from_logits(sq, cl).masked_fill(~fmask[mm], NEG)
+        tl = model.heads[g].to_logits(sq, fsq, cl).masked_fill(~tmask[mm], NEG)
+        ce += (torch.nn.functional.cross_entropy(fl, fsq, reduction="sum")
+               + torch.nn.functional.cross_entropy(tl, tsq, reduction="sum")).item()
+        match += ((fl.argmax(-1) == fsq) & (tl.argmax(-1) == tsq)).sum().item()
+    return ce / B, 100.0 * match / B
+
+
 def _step(model, batch, device, n_elo, ls, vlw, last_move_dropout: float = 0.0,
-          dropout_mode: str = "horizon", distill: bool = False):
+          dropout_mode: str = "horizon", distill: bool = False, log_human: bool = False):
     packed = batch["packed_pre"].to(device)
     elo = batch["elo_to_move"]
     hidx = model.head_index(elo).to(device)
@@ -92,19 +111,34 @@ def _step(model, batch, device, n_elo, ls, vlw, last_move_dropout: float = 0.0,
     else:
         fl, tl = _routed_policy_loss(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask, ls)
     vl = wdl_ce(model.value_head(cls, elo_idx=elo_to_bucket(elo, n_elo).to(device)), result)
-    return fl + tl + vlw * vl, {"from_ce": float(fl), "to_ce": float(tl), "wdl_ce": float(vl)}
+    md = {"from_ce": float(fl), "to_ce": float(tl), "wdl_ce": float(vl)}
+    if log_human:
+        h_ce, h_match = _routed_human_metrics(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask)
+        md["human_ce"] = h_ce; md["human_match"] = h_match
+    return fl + tl + vlw * vl, md
 
 
 @torch.no_grad()
-def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw, distill: bool = False):
-    was = model.training; model.eval(); tot = 0.0; nb = 0
+def _validate(model, val_dl, device, n_elo, use_amp, amp_dtype):
+    """Held-out HUMAN move CE (from+to) + joint move-match, computed from the TRUE human move
+    regardless of training objective -> distill and CE runs overlay on the same comparable,
+    low-noise curve. Returns (human_ce, human_match%)."""
+    was = model.training; model.eval(); ce = 0.0; mm = 0.0; nb = 0
     for batch in val_dl:
+        packed = batch["packed_pre"].to(device); elo = batch["elo_to_move"]
+        hidx = model.head_index(elo).to(device)
+        from_sq = batch["from_sq"].to(device); to_sq = batch["to_sq"].to(device)
+        fmask = u64_to_mask(batch["from_legal_u64"].to(device)); tmask = u64_to_mask(batch["to_legal_u64"].to(device))
+        hist = None
+        if "hist_from" in batch:
+            hist = (batch["hist_from"].to(device), batch["hist_to"].to(device), batch["hist_cap"].to(device))
         with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
-            loss, m = _step(model, batch, device, n_elo, 0.0, vlw, last_move_dropout=0.0, distill=distill)
-        tot += m["from_ce"] + m["to_ce"]; nb += 1
+            cls, squares = model.encode(packed, hist=hist)
+            h_ce, h_mm = _routed_human_metrics(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask)
+        ce += h_ce; mm += h_mm; nb += 1
     if was:
         model.train()
-    return tot / max(nb, 1)
+    return ce / max(nb, 1), mm / max(nb, 1)
 
 
 def _snapshot(model, arch, ckpt_dir, name, step, do_compile):
@@ -232,7 +266,8 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
                 break
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
                 loss, m = _step(model, batch, device, n_elo, ls, vlw, last_move_dropout=lmd,
-                                dropout_mode=dropout_mode, distill=distill)
+                                dropout_mode=dropout_mode, distill=distill,
+                                log_human=(step % stage["log_interval"] == 0))
             if not torch.isfinite(loss):
                 raise RuntimeError(f"non-finite loss at step {step}")
             opt.zero_grad(set_to_none=True); loss.backward()
@@ -241,16 +276,20 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
             if sched is not None:
                 sched.step()
             if step % stage["log_interval"] == 0:
-                print(f"step={step}/{total_steps} from_ce={m['from_ce']:.3f} to_ce={m['to_ce']:.3f} wdl={m['wdl_ce']:.3f}", flush=True)
+                hstr = f" human_ce={m['human_ce']:.3f} human_match={m['human_match']:.2f}%" if "human_ce" in m else ""
+                print(f"step={step}/{total_steps} from_ce={m['from_ce']:.3f} to_ce={m['to_ce']:.3f} wdl={m['wdl_ce']:.3f}{hstr}", flush=True)
                 if run is not None:
-                    run.log({"train/from_ce": m["from_ce"], "train/to_ce": m["to_ce"],
-                             "train/wdl_ce": m["wdl_ce"], "lr": opt.param_groups[0]["lr"]}, step=step)
+                    logd = {"train/from_ce": m["from_ce"], "train/to_ce": m["to_ce"],
+                            "train/wdl_ce": m["wdl_ce"], "lr": opt.param_groups[0]["lr"]}
+                    if "human_ce" in m:
+                        logd["train/human_ce"] = m["human_ce"]; logd["train/human_match"] = m["human_match"]
+                    run.log(logd, step=step)
             if val_dl is not None and val_interval and step > 0 and step % val_interval == 0:
-                v = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw, distill=distill)
-                print(f"  [val step={step}] from+to_ce={v:.4f}", flush=True)
-                best = min(best, v)
+                v_ce, v_mm = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
+                print(f"  [val step={step}] human_ce={v_ce:.4f} human_match={v_mm:.2f}%", flush=True)
+                best = min(best, v_ce)
                 if run is not None:
-                    run.log({"val/from_to_ce": v}, step=step)
+                    run.log({"val/human_ce": v_ce, "val/human_match": v_mm}, step=step)
             if ckpt_interval and step > 0 and step % ckpt_interval == 0:
                 torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "step": step,
                             "best": best, "scheduler": sched.state_dict() if sched else None}, resume_path)
@@ -258,9 +297,12 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
                 _snapshot(model, arch, ckpt_dir, name, step, do_compile)
                 print(f"  [snapshot step={step}] wrote {name}.step{step}.pt", flush=True)
             step += 1
-    final_val = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype, vlw, distill=distill) if val_dl else float("nan")
+    if val_dl:
+        fv_ce, fv_mm = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
+    else:
+        fv_ce, fv_mm = float("nan"), float("nan")
     _export(model, arch, ckpt_dir, name, do_compile)
-    print(f"saved {ckpt_dir}/{name}.pt + encoder + per-band heads; final_val={final_val:.4f}")
+    print(f"saved {ckpt_dir}/{name}.pt + encoder + per-band heads; final human_ce={fv_ce:.4f} human_match={fv_mm:.2f}%")
     if run is not None:
         run.finish()
-    return {"steps": step, "final_val": final_val}
+    return {"steps": step, "final_human_ce": fv_ce, "final_human_match": fv_mm}
