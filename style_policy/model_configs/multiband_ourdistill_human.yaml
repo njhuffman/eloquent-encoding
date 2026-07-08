@@ -24,8 +24,8 @@ architecture:
   n_elo_buckets: 40
   use_castling_ep: true
   use_cls_in_heads: true
-  use_last_move: true
-  n_history_ply: 2
+  use_last_move: false        # NO-HISTORY: pure board-state world model ("nothing but the board")
+  n_history_ply: 0
   bands: [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100]
 defaults:
   batch_size: 256
