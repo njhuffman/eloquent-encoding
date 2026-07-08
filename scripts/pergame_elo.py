@@ -65,7 +65,7 @@ def main():
                 torch.from_numpy(f["hist_cap"][sel][:, :n_ply].astype(np.int64)))
     print(f"[train] encoding {len(sel):,} positions ...", flush=True)
     X = feats(model, f["packed_pre"][sel], hist, dev); Yt = torch.from_numpy(y)
-    clf = torch.nn.Sequential(torch.nn.Linear(768, 256), torch.nn.ReLU(), torch.nn.Linear(256, 12)).to(dev)
+    clf = torch.nn.Sequential(torch.nn.Linear(X.shape[1], 256), torch.nn.ReLU(), torch.nn.Linear(256, 12)).to(dev)
     opt = torch.optim.AdamW(clf.parameters(), lr=1e-3, weight_decay=1e-4)
     for ep in range(30):
         p = torch.randperm(len(X))
