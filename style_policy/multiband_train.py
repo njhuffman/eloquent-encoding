@@ -218,10 +218,14 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
     opt = torch.optim.AdamW(_trainable_params(model), lr=stage["train"]["learning_rate"],
                             weight_decay=stage["weight_decay"], fused=(device == "cuda"))
     preshuffled = bool(spec.get("preshuffled", False))
+    preload = bool(spec.get("preload_ram", False))
     ds = PackedMoveDataset(spec["train_h5"], sample_n=stage["sample"]["n"],
-                           seed=stage["sample"]["seed"], sequential=preshuffled)
+                           seed=stage["sample"]["seed"], sequential=preshuffled, preload=preload)
+    _nw = 0 if preload else int(stage["dataloader_num_workers"])   # preload -> single process (RAM held once)
     dl = DataLoader(ds, batch_size=stage["batch_size"], shuffle=not preshuffled,
-                    num_workers=stage["dataloader_num_workers"], collate_fn=PackedMoveDataset.collate)
+                    num_workers=_nw, collate_fn=PackedMoveDataset.collate,
+                    pin_memory=(device == "cuda"),
+                    persistent_workers=(_nw > 0), prefetch_factor=(6 if _nw > 0 else None))
     val_dl = None
     if spec.get("val_h5") and spec.get("val_sample"):
         vds = PackedMoveDataset(spec["val_h5"], sample_n=spec["val_sample"]["n"], seed=spec["val_sample"]["seed"])

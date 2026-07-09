@@ -16,7 +16,7 @@ _HIST_LEN = 4
 
 class PackedMoveDataset(Dataset):
     def __init__(self, h5_path: str | Path, *, sample_n: int | None = None, seed: int = 0,
-                 band: tuple[int, int] | None = None, sequential: bool = False):
+                 band: tuple[int, int] | None = None, sequential: bool = False, preload: bool = False):
         self.path = str(h5_path)
         with h5py.File(self.path, "r") as f:
             n = int(f["packed_pre"].shape[0])
@@ -39,6 +39,16 @@ class PackedMoveDataset(Dataset):
         else:
             self.indices = pool  # nonzero()/arange() are already ascending
         self._f: h5py.File | None = None
+        # Optional RAM preload: load full fields into memory (index by h5-row) -> no per-row h5
+        # reads. Use num_workers=0 (else each worker duplicates the arrays -> OOM).
+        self._ram: dict | None = None
+        if preload:
+            _keys = ["packed_pre", "from_legal_u64", "to_legal_u64", "elo_to_move", "result",
+                     "opp_elo", "from_sq", "to_sq", "promotion"]
+            if self._has_hist: _keys += ["hist_from", "hist_to", "hist_cap"]
+            if self._has_soft: _keys += ["maia_from", "maia_to"]
+            with h5py.File(self.path, "r") as f:
+                self._ram = {k: f[k][:] for k in _keys}
 
     def _file(self) -> h5py.File:
         if self._f is None:
@@ -50,30 +60,30 @@ class PackedMoveDataset(Dataset):
 
     def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
         idx = int(self.indices[i])
-        f = self._file()
+        src = self._ram if self._ram is not None else self._file()
         out = {
-            "packed_pre": torch.from_numpy(f["packed_pre"][idx].astype(np.uint8)),
-            "from_legal_u64": torch.from_numpy(np.array(f["from_legal_u64"][idx], dtype=np.uint64)).to(torch.int64),
-            "to_legal_u64": torch.from_numpy(np.array(f["to_legal_u64"][idx], dtype=np.uint64)).to(torch.int64),
-            "elo_to_move": torch.tensor(int(f["elo_to_move"][idx]), dtype=torch.int64),
-            "result": torch.tensor(int(f["result"][idx]), dtype=torch.int64),
-            "opp_elo": torch.tensor(int(f["opp_elo"][idx]), dtype=torch.int64),
+            "packed_pre": torch.from_numpy(src["packed_pre"][idx].astype(np.uint8)),
+            "from_legal_u64": torch.from_numpy(np.array(src["from_legal_u64"][idx], dtype=np.uint64)).to(torch.int64),
+            "to_legal_u64": torch.from_numpy(np.array(src["to_legal_u64"][idx], dtype=np.uint64)).to(torch.int64),
+            "elo_to_move": torch.tensor(int(src["elo_to_move"][idx]), dtype=torch.int64),
+            "result": torch.tensor(int(src["result"][idx]), dtype=torch.int64),
+            "opp_elo": torch.tensor(int(src["opp_elo"][idx]), dtype=torch.int64),
         }
         for k in _FIELDS_U8:
-            out[k] = torch.tensor(int(f[k][idx]), dtype=torch.int64)
+            out[k] = torch.tensor(int(src[k][idx]), dtype=torch.int64)
         # Optional last-move history columns (absent-by-default for older datasets).
         if self._has_hist:
-            out["hist_from"] = torch.from_numpy(f["hist_from"][idx].astype(np.int64))
-            out["hist_to"]   = torch.from_numpy(f["hist_to"][idx].astype(np.int64))
-            out["hist_cap"]  = torch.from_numpy(f["hist_cap"][idx].astype(np.int64))
+            out["hist_from"] = torch.from_numpy(src["hist_from"][idx].astype(np.int64))
+            out["hist_to"]   = torch.from_numpy(src["hist_to"][idx].astype(np.int64))
+            out["hist_cap"]  = torch.from_numpy(src["hist_cap"][idx].astype(np.int64))
         else:
             out["hist_from"] = torch.full((_HIST_LEN,), _HIST_ABSENT_SQ,  dtype=torch.int64)
             out["hist_to"]   = torch.full((_HIST_LEN,), _HIST_ABSENT_SQ,  dtype=torch.int64)
             out["hist_cap"]  = torch.full((_HIST_LEN,), _HIST_ABSENT_CAP, dtype=torch.int64)
         # Optional Maia-3 soft targets (P(from) and P(to|true-from), 64-vectors) for distillation.
         if self._has_soft:
-            out["maia_from"] = torch.from_numpy(f["maia_from"][idx].astype(np.float32))
-            out["maia_to"]   = torch.from_numpy(f["maia_to"][idx].astype(np.float32))
+            out["maia_from"] = torch.from_numpy(src["maia_from"][idx].astype(np.float32))
+            out["maia_to"]   = torch.from_numpy(src["maia_to"][idx].astype(np.float32))
         return out
 
     @staticmethod
