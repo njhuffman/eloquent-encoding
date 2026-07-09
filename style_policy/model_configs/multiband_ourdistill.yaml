@@ -9,7 +9,7 @@ train_h5: /mnt/eloquence_bulk/databases/ourteacher_distill_labels.h5
 val_h5: /mnt/eloquence_bulk/databases/wdl_validation_2025_05.h5   # held-out human-move val (comparable curve)
 val_sample: {n: 20000, seed: 42}
 distill: true
-preshuffled: false
+preshuffled: true
 wandb:
   project: style_policy
   mode: online
@@ -29,7 +29,7 @@ architecture:
   bands: [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100]
 defaults:
   batch_size: 256
-  dataloader_num_workers: 4
+  dataloader_num_workers: 12
   use_amp: true
   amp_dtype: bf16
   weight_decay: 0.01
