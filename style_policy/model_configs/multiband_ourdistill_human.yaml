@@ -28,15 +28,15 @@ architecture:
   n_history_ply: 0
   bands: [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100]
 defaults:
-  batch_size: 256
-  dataloader_num_workers: 12
+  batch_size: 512
+  dataloader_num_workers: 8
   use_amp: true
   amp_dtype: bf16
   weight_decay: 0.01
   max_gradient_norm: 1.0
   log_interval: 50
-  val_interval: 5000                 # held-out human_ce + human_match every 5k steps (~25 points)
-  snapshot_steps: [15625, 31250, 62500, 93750, 125000]  # 4M,8M,16M,24M,32M samples -> post-hoc concept curves
+  val_interval: 2500                 # held-out human_ce + human_match every 5k steps (~25 points)
+  snapshot_steps: [7812, 15625, 31250, 46875, 62500]  # 4M,8M,16M,24M,32M @ batch512  # 4M,8M,16M,24M,32M samples -> post-hoc concept curves
   checkpoint_interval: 5000
   lr_schedule: cosine
   warmup_steps: 2000
@@ -47,5 +47,5 @@ defaults:
   history_dropout: binary
 stages:
   - sample: {n: 32000000, seed: 1}
-    train: {epochs: 1, learning_rate: 0.0002}
+    train: {epochs: 1, learning_rate: 0.0003}
     label_smoothing: 0.1
