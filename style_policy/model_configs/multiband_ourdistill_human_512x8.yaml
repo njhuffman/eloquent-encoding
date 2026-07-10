@@ -1,0 +1,50 @@
+# 512/8 wide-shallow (= Maia3-23m's shape). HUMAN-CE arm. This is the objective of the eventual
+# big from-scratch run, so it's the most directly relevant de-risk: does 512/8-human at 32M
+# approach 384/12-human-at-128M (and beat our 256/8-human-32M)? No teacher ceiling here.
+name: multiband_ourdistill_human_512x8
+checkpoint_dir: style_policy_checkpoints/multiband_ourdistill_human_512x8
+train_h5: /mnt/eloquence_bulk/databases/ourteacher_distill_labels.h5
+val_h5: /mnt/eloquence_bulk/databases/wdl_validation_2025_05.h5
+val_sample: {n: 20000, seed: 42}
+distill: false
+preshuffled: true
+preload_ram: true
+wandb:
+  project: style_policy
+  mode: online
+architecture:
+  d_model: 512
+  n_layers: 8
+  nhead: 8
+  dim_feedforward: 2048
+  dropout: 0.0
+  head_hidden: 512
+  elo_dim: 32
+  n_elo_buckets: 40
+  use_castling_ep: true
+  use_cls_in_heads: true
+  use_last_move: false
+  n_history_ply: 0
+  bands: [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100]
+defaults:
+  batch_size: 256
+  dataloader_num_workers: 8
+  use_amp: true
+  amp_dtype: bf16
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 50
+  val_interval: 5000
+  snapshot_steps: [15625, 31250, 62500, 93750, 125000]
+  checkpoint_interval: 5000
+  lr_schedule: cosine
+  warmup_steps: 2000
+  lr_min_frac: 0.0
+  seed: 0
+  value_loss_weight: 1.0
+  last_move_dropout: 0.15
+  history_dropout: binary
+stages:
+  - sample: {n: 32000000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0002}
+    label_smoothing: 0.1
