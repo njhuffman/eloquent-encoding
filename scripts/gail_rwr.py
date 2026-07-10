@@ -120,33 +120,29 @@ def _kl(logits, ref_logits, mask):
 
 
 def rwr_update(model, head, ref, buf, D, beta, K, lr):
-    packed = buf["packed"]; frm = buf["frm"].to(DEV); to = buf["to"].to(DEV)
-    fmask = buf["fmask"].to(DEV); tmask = buf["tmask"].to(DEV)
-    # cache frozen features once
-    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-        cls, sq = [], []
-        for i in range(0, len(packed), 1024):
-            c, s = model.encode(packed[i:i+1024].to(DEV), hist=None); cls.append(c.float()); sq.append(s.float())
-        cls = torch.cat(cls); sq = torch.cat(sq)
-        Gn = gfeat(model, buf["nxt"]).to(DEV)
-        r = D(Gn).squeeze(1)                                              # reward = D logit (GRADED)
-        A = ((r - r.mean()) / (r.std() + 1e-6)).clamp(-3, 3)               # advantage
-        w = (torch.softmax(A, 0) * len(A)).detach()   # RWR weights: NON-NEGATIVE, mean 1 (only pulls
-        #                                               good moves UP; never drives logp to -inf)
+    packed = buf["packed"]; frm = buf["frm"]; to = buf["to"]; fmask = buf["fmask"]; tmask = buf["tmask"]
+    with torch.no_grad():                                                 # rewards -> RWR weights (once)
+        r = D(gfeat(model, buf["nxt"]).to(DEV)).squeeze(1)                # reward = D logit (GRADED)
+        A = ((r - r.mean()) / (r.std() + 1e-6)).clamp(-3, 3)
+        w = (torch.softmax(A, 0) * len(A)).detach().cpu()                 # NON-NEGATIVE, mean 1
     opt = torch.optim.AdamW(head.parameters(), lr=lr)
-    N = len(packed); idx = torch.arange(N, device=DEV)
+    N = len(packed); idx = torch.arange(N)
     for _ in range(K):
         perm = idx[torch.randperm(N)]
-        for i in range(0, N, 2048):
-            b = perm[i:i+2048]
-            fl = _san(head.from_logits(sq[b], cls[b])); logp_f = _mlogp(fl, fmask[b], frm[b])
-            tl = _san(head.to_logits(sq[b], frm[b], cls[b])); logp_t = _mlogp(tl, tmask[b], to[b])
-            rwr = -(w[b] * (logp_f + logp_t)).mean()
+        for i in range(0, N, 1024):
+            b = perm[i:i+1024]
+            with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                cls, sq = model.encode(packed[b].to(DEV), hist=None)       # re-encode (frozen) -> no cache
+                cls, sq = cls.float(), sq.float()
+            fm, tm, fr, t2 = fmask[b].to(DEV), tmask[b].to(DEV), frm[b].to(DEV), to[b].to(DEV)
+            fl = _san(head.from_logits(sq, cls)); logp_f = _mlogp(fl, fm, fr)
+            tl = _san(head.to_logits(sq, fr, cls)); logp_t = _mlogp(tl, tm, t2)
+            rwr = -(w[b].to(DEV) * (logp_f + logp_t)).mean()
             with torch.no_grad():
-                rfl = _san(ref.from_logits(sq[b], cls[b])); rtl = _san(ref.to_logits(sq[b], frm[b], cls[b]))
-            kl = (_kl(fl, rfl, fmask[b]) + _kl(tl, rtl, tmask[b])).mean()
+                rfl = _san(ref.from_logits(sq, cls)); rtl = _san(ref.to_logits(sq, fr, cls))
+            kl = (_kl(fl, rfl, fm) + _kl(tl, rtl, tm)).mean()
             loss = rwr + beta * kl
-            if not torch.isfinite(loss):        # skip any nan/inf batch (don't poison the head)
+            if not torch.isfinite(loss):
                 opt.zero_grad(); continue
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(head.parameters(), 1.0)
@@ -162,6 +158,8 @@ def main():
     ap.add_argument("--B", type=int, default=256); ap.add_argument("--plies", type=int, default=24)
     ap.add_argument("--outer", type=int, default=6); ap.add_argument("--K", type=int, default=4)
     ap.add_argument("--lr", type=float, default=2e-4); ap.add_argument("--beta0", type=float, default=0.5)
+    ap.add_argument("--beta1", type=float, default=0.15)   # anneal target (looser leash late)
+    ap.add_argument("--save", default="")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location=DEV)
     model = MultiBandPolicy.from_config(ck["architecture"]); model.load_state_dict(ck["model"], strict=False)
@@ -185,7 +183,8 @@ def main():
         Gh = gfeat(model, torch.from_numpy(f["packed_pre"][hsel].astype(np.int64)).to(torch.uint8))
         Gp = gfeat(model, pol_states)
         D, au = train_disc(Gh, Gp, seed=it)
-        beta = a.beta0                                     # constant strong leash (prevents collapse)
+        frac = it / max(a.outer - 1, 1)
+        beta = a.beta0 * (1 - frac) + a.beta1 * frac       # anneal leash down (allow more movement late)
         mr, astd = rwr_update(model, head, ref, buf, D, beta, a.K, a.lr)
         print(f"   {it:3d}   {au:.3f}   {mr:+.3f}   (beta={beta:.2f}, |moves|={len(buf['packed'])})", flush=True)
     # final eval: fresh policy vs human
@@ -194,6 +193,9 @@ def main():
     _, au_final = train_disc(gfeat(model, torch.from_numpy(f["packed_pre"][hsel].astype(np.int64)).to(torch.uint8)),
                              gfeat(model, pol_states), seed=9)
     print(f"\n  FINAL held-out disc AUC (human vs RWR policy): {au_final:.3f}")
+    if a.save:
+        torch.save({"architecture": ck["architecture"], "model": model.state_dict()}, a.save)
+        print(f"  saved RWR policy -> {a.save}")
 
 
 if __name__ == "__main__":
