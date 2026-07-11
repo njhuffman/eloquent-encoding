@@ -40,7 +40,7 @@ def collect_seeds(pgn, band, P, horizons, n_seeds, n_ply):
 
 
 @torch.no_grad()
-def rollout(model, head, n_ply, seeds, horizons, dev, gseed=0):
+def rollout(model, head, n_ply, seeds, horizons, dev, gseed=0, temp=1.0):
     g = torch.Generator(device=dev).manual_seed(gseed)
     boards = [s[0].copy() for s in seeds]
     recents = [deque(s[1], maxlen=max(n_ply, 1)) for s in seeds]
@@ -58,10 +58,10 @@ def rollout(model, head, n_ply, seeds, horizons, dev, gseed=0):
                     if key not in by or m.promotion == chess.QUEEN: by[key] = m
                 froms = sorted({f for f, _ in by})
                 fl = head.from_logits(sq[k:k+1], cls[k:k+1])[0][froms]
-                fi = torch.multinomial(torch.softmax(fl, -1), 1, generator=g).item()
+                fi = torch.multinomial(torch.softmax(fl / temp, -1), 1, generator=g).item()
                 f = froms[fi]; tos = [t for (ff, t) in by if ff == f]
                 tl = head.to_logits(sq[k:k+1], torch.tensor([f], device=dev), cls[k:k+1])[0][tos]
-                ti = torch.multinomial(torch.softmax(tl, -1), 1, generator=g).item()
+                ti = torch.multinomial(torch.softmax(tl / temp, -1), 1, generator=g).item()
                 mv = by[(f, tos[ti])]; recents[i].append((f, tos[ti], _cap(b, mv))); b.push(mv)
         kk = step + 1
         if kk in horizons:
@@ -74,7 +74,7 @@ def main():
     ap.add_argument("--ckpt", default="style_policy_checkpoints/multiband_history_128M_big/multiband_history_128M_big.pt")
     ap.add_argument("--pgn", default="/mnt/eloquence_bulk/databases/lichess_db_standard_rated_2025-05_tc_600_0.pgn.zst")
     ap.add_argument("--band", type=int, default=1500); ap.add_argument("--seed-ply", type=int, default=10)
-    ap.add_argument("--horizons", default="4,8,12"); ap.add_argument("--n-seeds", type=int, default=1500)
+    ap.add_argument("--horizons", default="4,8,12"); ap.add_argument("--n-seeds", type=int, default=1500); ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--device", default="cuda"); a = ap.parse_args(); dev = a.device
     horizons = [int(x) for x in a.horizons.split(",")]
     model, n_ply = load(a.ckpt, dev)
@@ -83,7 +83,7 @@ def main():
     seeds = collect_seeds(a.pgn, a.band, a.seed_ply, horizons, a.n_seeds, n_ply)
     print(f"  {len(seeds)} seeds", flush=True)
     print("bot rollout from human seeds ...", flush=True)
-    snaps = rollout(model, head, n_ply, seeds, horizons, dev)
+    snaps = rollout(model, head, n_ply, seeds, horizons, dev, temp=a.temperature)
 
     print(f"\n===== SEEDED DRIFT (band {a.band}, seed ply {a.seed_ply}; same openings) =====")
     print("  human-continuation vs BOT-continuation, K plies after the shared seed:")

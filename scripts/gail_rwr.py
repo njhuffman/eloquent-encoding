@@ -25,6 +25,23 @@ def _san(logits):
     return torch.nan_to_num(logits, nan=-1e9, posinf=1e4, neginf=-1e9)
 
 
+def sa_feat(model, packed, frm, to):
+    """STATE-ACTION features: [encoder global (512) ++ from one-hot (64) ++ to one-hot (64)] = 640."""
+    G = gfeat(model, packed)
+    of = torch.nn.functional.one_hot(frm.long(), 64).float()
+    ot = torch.nn.functional.one_hot(to.long(), 64).float()
+    return torch.cat([G, of, ot], 1)
+
+
+def human_sa(model, f, pool, n, rng):
+    """Sample n human (state, human-move) pairs -> S-A features (positives)."""
+    sel = np.sort(rng.choice(pool, min(n, len(pool)), replace=False))
+    pk = torch.from_numpy(f["packed_pre"][sel].astype(np.int64)).to(torch.uint8)
+    fr = torch.from_numpy(f["from_sq"][sel].astype(np.int64))
+    to = torch.from_numpy(f["to_sq"][sel].astype(np.int64))
+    return sa_feat(model, pk, fr, to)
+
+
 def gfeat(model, packed, bs=1024):
     """[CLS ++ mean-sq] global features (frozen encoder). packed torch uint8 (N,34) -> (N,512)."""
     out = []
@@ -36,7 +53,7 @@ def gfeat(model, packed, bs=1024):
 
 
 @torch.no_grad()
-def collect(model, head, B, n_plies, band, seed):
+def collect(model, head, B, n_plies, band, seed, rt=1.0):
     """Self-play; return buffer dict of active-move tensors + all visited policy states (packed)."""
     env = pgx.make("chess"); step = jax.jit(jax.vmap(env.step))
     state = jax.jit(jax.vmap(env.init))(jax.random.split(jax.random.PRNGKey(seed), B))
@@ -55,10 +72,10 @@ def collect(model, head, B, n_plies, band, seed):
         lam = _j2t(state.legal_action_mask)
         fmask = legal_from_mask(lam, color); no_legal = ~fmask.any(1); fmask[no_legal, 0] = True
         fl = _san(head.from_logits(sq, cls).float().masked_fill(~fmask, -1e9))
-        frm = torch.multinomial(torch.softmax(fl, -1), 1, generator=g).squeeze(1)
+        frm = torch.multinomial(torch.softmax(fl / rt, -1), 1, generator=g).squeeze(1)
         tmask = legal_to_mask(lam, frm, color); tmask[no_legal, 0] = True
         tl = _san(head.to_logits(sq, frm, cls).float().masked_fill(~tmask, -1e9))
-        to = torch.multinomial(torch.softmax(tl, -1), 1, generator=g).squeeze(1)
+        to = torch.multinomial(torch.softmax(tl / rt, -1), 1, generator=g).squeeze(1)
         act = ~term & ~no_legal
         ai = torch.nonzero(act).flatten()
         if os.environ.get("DBG") and ply < 4:
@@ -122,7 +139,7 @@ def _kl(logits, ref_logits, mask):
 def rwr_update(model, head, ref, buf, D, beta, K, lr):
     packed = buf["packed"]; frm = buf["frm"]; to = buf["to"]; fmask = buf["fmask"]; tmask = buf["tmask"]
     with torch.no_grad():                                                 # rewards -> RWR weights (once)
-        r = D(gfeat(model, buf["nxt"]).to(DEV)).squeeze(1)                # reward = D logit (GRADED)
+        r = D(sa_feat(model, packed, frm, to).to(DEV)).squeeze(1)         # reward = D(s,a) logit (GRADED)
         A = ((r - r.mean()) / (r.std() + 1e-6)).clamp(-3, 3)
         w = (torch.softmax(A, 0) * len(A)).detach().cpu()                 # NON-NEGATIVE, mean 1
     opt = torch.optim.AdamW(head.parameters(), lr=lr)
@@ -159,6 +176,7 @@ def main():
     ap.add_argument("--outer", type=int, default=6); ap.add_argument("--K", type=int, default=4)
     ap.add_argument("--lr", type=float, default=2e-4); ap.add_argument("--beta0", type=float, default=0.5)
     ap.add_argument("--beta1", type=float, default=0.15)   # anneal target (looser leash late)
+    ap.add_argument("--rollout-temp", type=float, default=1.0)
     ap.add_argument("--save", default="")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location=DEV)
@@ -177,22 +195,22 @@ def main():
     print(f"=== GAIL RWR (band {a.band}, B={a.B}, plies={a.plies}, outer={a.outer}, K={a.K}) ===", flush=True)
     print("  outer  discAUC   meanR   |  (AUC should DROP toward ~0.55 floor)", flush=True)
     for it in range(a.outer):
-        buf, pol_states = collect(model, head, a.B, a.plies, a.band, seed=100 + it)
+        buf, pol_states = collect(model, head, a.B, a.plies, a.band, seed=100 + it, rt=a.rollout_temp)
         rng = np.random.default_rng(it)
-        hsel = np.sort(rng.choice(hidx_h, min(len(pol_states), len(hidx_h)), replace=False))
-        Gh = gfeat(model, torch.from_numpy(f["packed_pre"][hsel].astype(np.int64)).to(torch.uint8))
-        Gp = gfeat(model, pol_states)
+        n = len(buf["packed"])
+        Gh = human_sa(model, f, hidx_h, n, rng)                       # human (state, human-move) +
+        Gp = sa_feat(model, buf["packed"], buf["frm"], buf["to"])     # policy (state, policy-move) -
         D, au = train_disc(Gh, Gp, seed=it)
         frac = it / max(a.outer - 1, 1)
         beta = a.beta0 * (1 - frac) + a.beta1 * frac       # anneal leash down (allow more movement late)
         mr, astd = rwr_update(model, head, ref, buf, D, beta, a.K, a.lr)
         print(f"   {it:3d}   {au:.3f}   {mr:+.3f}   (beta={beta:.2f}, |moves|={len(buf['packed'])})", flush=True)
-    # final eval: fresh policy vs human
-    buf, pol_states = collect(model, head, a.B, a.plies, a.band, seed=999)
-    hsel = np.sort(np.random.default_rng(9).choice(hidx_h, min(len(pol_states), len(hidx_h)), replace=False))
-    _, au_final = train_disc(gfeat(model, torch.from_numpy(f["packed_pre"][hsel].astype(np.int64)).to(torch.uint8)),
-                             gfeat(model, pol_states), seed=9)
-    print(f"\n  FINAL held-out disc AUC (human vs RWR policy): {au_final:.3f}")
+    # final eval: fresh S-A disc, human(s,a) vs RWR-policy(s,a)
+    buf, _ = collect(model, head, a.B, a.plies, a.band, seed=999, rt=a.rollout_temp)
+    rng = np.random.default_rng(9); n = len(buf["packed"])
+    _, au_final = train_disc(human_sa(model, f, hidx_h, n, rng),
+                             sa_feat(model, buf["packed"], buf["frm"], buf["to"]), seed=9)
+    print(f"\n  FINAL held-out S-A disc AUC (human vs RWR policy moves): {au_final:.3f}")
     if a.save:
         torch.save({"architecture": ck["architecture"], "model": model.state_dict()}, a.save)
         print(f"  saved RWR policy -> {a.save}")
