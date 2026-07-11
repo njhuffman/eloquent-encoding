@@ -86,17 +86,23 @@ def selfplay(model, head, B, max_plies, seed, rt=1.0):
     return buf, stats
 
 
-def rl_update(model, head, ref, buf, K, lr, ent_coef, beta):
+def rl_update(model, head, ref, buf, K, lr, ent_coef, beta, enc_lr=0.0):
     packed = buf["packed"]; frm = buf["frm"]; to = buf["to"]; fmask = buf["fmask"]; tmask = buf["tmask"]
     r = buf["reward"].to(DEV)
     A = ((r - r.mean()) / (r.std() + 1e-6)).clamp(-3, 3)      # signed advantage (REINFORCE)
-    opt = torch.optim.AdamW(head.parameters(), lr=lr)
+    groups = [{"params": head.parameters(), "lr": lr}]
+    if enc_lr > 0:                                            # test B: fine-tune the encoder too
+        groups.append({"params": model.encoder.parameters(), "lr": enc_lr})
+    opt = torch.optim.AdamW(groups)
+    tp = list(head.parameters()) + (list(model.encoder.parameters()) if enc_lr > 0 else [])
+    mb = 512 if enc_lr > 0 else 1024                          # grad through encoder -> smaller minibatch
     N = len(packed); idx = torch.arange(N)
     for _ in range(K):
         perm = idx[torch.randperm(N)]
-        for i in range(0, N, 1024):
-            b = perm[i:i+1024]
-            with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        for i in range(0, N, mb):
+            b = perm[i:i+mb]
+            enc_ctx = torch.enable_grad() if enc_lr > 0 else torch.no_grad()
+            with enc_ctx, torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 cls, sq = model.encode(packed[b].to(DEV), hist=None); cls, sq = cls.float(), sq.float()
             fm, tm, fr, t2 = fmask[b].to(DEV), tmask[b].to(DEV), frm[b].to(DEV), to[b].to(DEV)
             fl = _san(head.from_logits(sq, cls)); tl = _san(head.to_logits(sq, fr, cls))
@@ -108,7 +114,7 @@ def rl_update(model, head, ref, buf, K, lr, ent_coef, beta):
             loss = -(A[b] * logp).mean() - ent_coef * ent.mean() + beta * kl.mean()
             if not torch.isfinite(loss): opt.zero_grad(); continue
             opt.zero_grad(); loss.backward()
-            torch.nn.utils.clip_grad_norm_(head.parameters(), 1.0); opt.step()
+            torch.nn.utils.clip_grad_norm_(tp, 1.0); opt.step()
     return float(r.mean())
 
 
@@ -119,6 +125,7 @@ def main():
     ap.add_argument("--max-plies", type=int, default=200); ap.add_argument("--outer", type=int, default=10)
     ap.add_argument("--K", type=int, default=4); ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--ent", type=float, default=0.0); ap.add_argument("--beta", type=float, default=0.1)
+    ap.add_argument("--enc-lr", type=float, default=0.0)   # >0 -> UNFREEZE + fine-tune the encoder (test B)
     ap.add_argument("--rt", type=float, default=1.0); ap.add_argument("--save", default="")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location=DEV)
@@ -127,13 +134,16 @@ def main():
     for p in model.parameters(): p.requires_grad_(False)
     head = model.heads[int(model.head_index(torch.tensor([a.band])).item())]
     for p in head.parameters(): p.requires_grad_(True)
+    if a.enc_lr > 0:                                          # test B: unfreeze the encoder
+        for p in model.encoder.parameters(): p.requires_grad_(True)
+        model.encoder.train()
     ref = copy.deepcopy(head).to(DEV).eval()
     for p in ref.parameters(): p.requires_grad_(False)
-    print(f"=== self-play RL (band-head {a.band}, B={a.B}, outer={a.outer}, K={a.K}) ===", flush=True)
+    print(f"=== self-play RL (band-head {a.band}, B={a.B}, outer={a.outer}, K={a.K}, enc_lr={a.enc_lr}) ===", flush=True)
     print("  outer  meanR   term%  adj%   draw%  moves", flush=True)
     for it in range(a.outer):
         buf, st = selfplay(model, head, a.B, a.max_plies, seed=1000 + it, rt=a.rt)
-        mr = rl_update(model, head, ref, buf, a.K, a.lr, a.ent, a.beta)
+        mr = rl_update(model, head, ref, buf, a.K, a.lr, a.ent, a.beta, enc_lr=a.enc_lr)
         print(f"   {it:3d}  {mr:+.3f}  {100*st['term_rate']:5.1f} {100*st['adjudicated']:5.1f} "
               f"{100*st['draw_rate']:5.1f} {st['n_moves']:6d}", flush=True)
     if a.save:
