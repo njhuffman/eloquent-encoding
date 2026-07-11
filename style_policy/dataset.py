@@ -12,7 +12,7 @@ _FIELDS_U8 = ("from_sq", "to_sq", "promotion")
 _HIST_ABSENT_SQ = -1
 _HIST_ABSENT_CAP = 0
 _HIST_LEN = 4
-_NNUE_NA = -32001                      # Stockfish static-eval sentinel (in-check positions)
+_NNUE_NA = -32768                      # Stockfish-eval NA sentinel; must match STATIC_NA in stockfish_eval.py
 
 
 class PackedMoveDataset(Dataset):
@@ -57,7 +57,7 @@ class PackedMoveDataset(Dataset):
         self._nnue_f: h5py.File | None = None
         if self._nnue_path is not None and preload:
             with h5py.File(self._nnue_path, "r") as nf:
-                self._nnue_ram = nf["sf_static_cp"][:]
+                self._nnue_ram = nf["sf_cp"][:]
 
     def _file(self) -> h5py.File:
         if self._f is None:
@@ -99,7 +99,7 @@ class PackedMoveDataset(Dataset):
             out["maia_from"] = torch.from_numpy(src["maia_from"][idx].astype(np.float32))
             out["maia_to"]   = torch.from_numpy(src["maia_to"][idx].astype(np.float32))
         if self._nnue_path is not None:
-            cp = int(self._nnue_ram[idx]) if self._nnue_ram is not None else int(self._nnue_file()["sf_static_cp"][idx])
+            cp = int(self._nnue_ram[idx]) if self._nnue_ram is not None else int(self._nnue_file()["sf_cp"][idx])
             valid = cp != _NNUE_NA
             out["nnue_value"] = torch.tensor(float(np.tanh(cp / 400.0)) if valid else 0.0, dtype=torch.float32)
             out["nnue_valid"] = torch.tensor(valid, dtype=torch.bool)

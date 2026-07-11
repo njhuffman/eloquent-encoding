@@ -1,7 +1,9 @@
-# Multi-task control (2026-07-11): human-move + WDL + Stockfish static-NNUE eval, on the frozen-arch
+# Multi-task control (2026-07-11): human-move + WDL + Stockfish depth-1 eval, on the frozen-arch
 # 256/8 encoder. Identical to multiband_ourdistill_human.yaml except + nnue head/target — so it's an
-# apples-to-apples help/hurt test vs that baseline. Does adding the NNUE-eval objective change
+# apples-to-apples help/hurt test vs that baseline. Does adding the SF-eval objective change
 # move-match / WDL, and does the encoder learn the eval (vs the frozen-probe r~0.89)?
+# (target = depth-1 SF search cp, tanh(cp/400); depth-1 not static `eval` because the verbose static
+#  command is 6x slower and tactically blind — see scripts/static_nnue_label.py header.)
 name: multiband_ourdistill_human_nnue
 checkpoint_dir: style_policy_checkpoints/multiband_ourdistill_human_nnue
 train_h5: /mnt/eloquence_bulk/databases/ourteacher_distill_labels.h5
