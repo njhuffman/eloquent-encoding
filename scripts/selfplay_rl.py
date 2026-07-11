@@ -26,6 +26,16 @@ def _kl(logits, ref, mask):
     return torch.where(mask, lp.exp()*(lp-lq), torch.zeros_like(lp)).sum(-1)
 
 
+# signed piece values by nibble (0 empty; 1-6 white P N B R Q K; 7-12 black), white-perspective
+_SV = torch.tensor([0, 1, 3, 3, 5, 9, 0, -1, -3, -3, -5, -9, 0], dtype=torch.float)
+def material_score(packed):
+    """white-perspective material balance -> tanh in [-1,1]. packed uint8 (B,34)."""
+    sv = _SV.to(packed.device)
+    lo = (packed[:, :32] & 0xF).long(); hi = ((packed[:, :32] >> 4) & 0xF).long()
+    mat = sv[lo].sum(1) + sv[hi].sum(1)
+    return torch.tanh(mat / 4.0)
+
+
 @torch.no_grad()
 def selfplay(model, head, B, max_plies, seed, rt=1.0):
     """Self-play B games to termination. Returns buffer of (state,action,masks,reward) per move,
@@ -34,6 +44,7 @@ def selfplay(model, head, B, max_plies, seed, rt=1.0):
     state = jax.jit(jax.vmap(env.init))(jax.random.split(jax.random.PRNGKey(seed), B))
     g = torch.Generator(device=DEV).manual_seed(seed)
     recs = []; result = torch.zeros(B); done = torch.zeros(B, dtype=torch.bool); plies_played = 0
+    last_packed = torch.zeros(B, 34, dtype=torch.uint8)
     for ply in range(max_plies):
         term = _j2t(state.terminated).cpu(); color = _j2t(state._x.color).to(torch.int64)
         rew = _j2t(state.rewards).cpu()                       # (B,2) white/black outcome
@@ -44,6 +55,7 @@ def selfplay(model, head, B, max_plies, seed, rt=1.0):
         plies_played = ply + 1
         packed = pgx_to_packed(color, _j2t(state._x.board),
                                _j2t(state._x.castling_rights), _j2t(state._x.en_passant))
+        pc = packed.cpu(); last_packed[~done] = pc[~done]     # track final state per live game
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             cls, sq = model.encode(packed.to(DEV), hist=None)
         lam = _j2t(state.legal_action_mask)
@@ -61,13 +73,16 @@ def selfplay(model, head, B, max_plies, seed, rt=1.0):
         label, _ = our_move_to_pgx_action(frm, to, color)
         label = torch.where(_j2t(state.terminated) | no_legal, torch.zeros_like(label), label.clamp(0, 4671))
         state = step(state, _t2j(label.to(torch.int32)))
-    # assemble buffer; reward = result[game] * (+1 white-mover / -1 black-mover)
+    adj = ~done                                              # unterminated: adjudicate by material
+    if adj.any(): result[adj] = material_score(last_packed[adj].to(DEV)).cpu()
+    # assemble buffer; reward = return[game] * (+1 white-mover / -1 black-mover)
     keys = ["packed", "frm", "to", "fmask", "tmask"]
     buf = {k: torch.cat([r[i] for r in recs]) for i, k in enumerate(keys)}
     gid = torch.cat([r[5] for r in recs]); mover = torch.cat([r[6] for r in recs])
     buf["reward"] = result[gid] * (1 - 2 * mover.float())
-    stats = dict(term_rate=float(done.float().mean()), draw_rate=float((result[done] == 0).float().mean()),
-                 white_win=float((result[done] > 0).float().mean()), n_moves=len(gid), plies=plies_played)
+    stats = dict(term_rate=float(done.float().mean()), adjudicated=float(adj.float().mean()),
+                 draw_rate=float((result[done] == 0).float().mean()) if done.any() else 0.0,
+                 n_moves=len(gid), plies=plies_played)
     return buf, stats
 
 
@@ -103,7 +118,7 @@ def main():
     ap.add_argument("--band", type=int, default=2100); ap.add_argument("--B", type=int, default=256)
     ap.add_argument("--max-plies", type=int, default=200); ap.add_argument("--outer", type=int, default=10)
     ap.add_argument("--K", type=int, default=4); ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--ent", type=float, default=0.01); ap.add_argument("--beta", type=float, default=0.1)
+    ap.add_argument("--ent", type=float, default=0.0); ap.add_argument("--beta", type=float, default=0.1)
     ap.add_argument("--rt", type=float, default=1.0); ap.add_argument("--save", default="")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location=DEV)
@@ -115,12 +130,12 @@ def main():
     ref = copy.deepcopy(head).to(DEV).eval()
     for p in ref.parameters(): p.requires_grad_(False)
     print(f"=== self-play RL (band-head {a.band}, B={a.B}, outer={a.outer}, K={a.K}) ===", flush=True)
-    print("  outer  meanR   draw%  wwin%  moves  plies", flush=True)
+    print("  outer  meanR   term%  adj%   draw%  moves", flush=True)
     for it in range(a.outer):
         buf, st = selfplay(model, head, a.B, a.max_plies, seed=1000 + it, rt=a.rt)
         mr = rl_update(model, head, ref, buf, a.K, a.lr, a.ent, a.beta)
-        print(f"   {it:3d}  {mr:+.3f}  {100*st['draw_rate']:5.1f} {100*st['white_win']:5.1f} "
-              f"{st['n_moves']:6d}  {st['plies']}", flush=True)
+        print(f"   {it:3d}  {mr:+.3f}  {100*st['term_rate']:5.1f} {100*st['adjudicated']:5.1f} "
+              f"{100*st['draw_rate']:5.1f} {st['n_moves']:6d}", flush=True)
     if a.save:
         torch.save({"architecture": ck["architecture"], "model": model.state_dict()}, a.save)
         print(f"  saved -> {a.save}")
