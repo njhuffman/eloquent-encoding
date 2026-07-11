@@ -36,6 +36,49 @@ def strong_auc(Fpos, Fneg, dev, hidden=256, epochs=120, seed=0):
     return auc(s, Y[tei].numpy())
 
 
+@torch.no_grad()
+def token_feats(model, packed, dev, bs=256):
+    """Full per-token encoding: [CLS ++ 64 square tokens] -> (N, 65, 256), NOT pooled."""
+    out = []
+    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        for i in range(0, len(packed), bs):
+            pk = torch.from_numpy(np.asarray(packed[i:i+bs]).astype(np.int64)).to(dev)
+            c, s = model.encode(pk, hist=None)
+            out.append(torch.cat([c.unsqueeze(1), s], 1).float().cpu())
+    return torch.cat(out)
+
+
+class AttnDisc(torch.nn.Module):
+    """Attention-pool discriminator over the 65 tokens: learns WHICH squares to look at."""
+    def __init__(self, d=256, h=128):
+        super().__init__()
+        self.q = torch.nn.Parameter(torch.randn(d) * 0.02)
+        self.k = torch.nn.Linear(d, d); self.v = torch.nn.Linear(d, d)
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(d, h), torch.nn.ReLU(),
+                                       torch.nn.Dropout(0.3), torch.nn.Linear(h, 1))
+
+    def forward(self, tok):                                    # tok (B,65,d)
+        w = torch.softmax((self.k(tok) @ self.q) / tok.shape[-1] ** 0.5, 1)   # (B,65)
+        return self.mlp((w.unsqueeze(-1) * self.v(tok)).sum(1)).squeeze(-1)
+
+
+def attn_auc(Tpos, Tneg, dev, epochs=80, seed=0):
+    torch.manual_seed(seed)
+    X = torch.cat([Tpos, Tneg]); Y = torch.cat([torch.ones(len(Tpos)), torch.zeros(len(Tneg))])
+    p = torch.randperm(len(X)); ntr = int(0.8*len(X)); tri, tei = p[:ntr], p[ntr:]
+    D = AttnDisc(d=X.shape[-1]).to(dev)
+    opt = torch.optim.AdamW(D.parameters(), lr=1e-3, weight_decay=1e-3)
+    for _ in range(epochs):
+        pp = tri[torch.randperm(len(tri))]
+        for i in range(0, len(tri), 256):
+            b = pp[i:i+256]
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(D(X[b].to(dev)), Y[b].to(dev))
+            opt.zero_grad(); loss.backward(); opt.step()
+    with torch.no_grad():
+        s = D(X[tei].to(dev)).cpu().numpy()
+    return auc(s, Y[tei].numpy())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default="style_policy_checkpoints/multiband_ourdistill/multiband_ourdistill.pt")
@@ -64,6 +107,10 @@ def main():
     print(f"{'STRONG (enc feats)':<26}{se:>13.3f}{sef:>12.3f}{se-sef:>8.3f}")
     sr, srf = strong_auc(Rh, Rb, dev), strong_auc(Rh[:nr], Rh[nr:], dev)
     print(f"{'STRONG (RAW planes)':<26}{sr:>13.3f}{srf:>12.3f}{sr-srf:>8.3f}")
+    Th, Tb = token_feats(model, human, dev), token_feats(model, bot, dev)   # full 65 tokens
+    nt = len(Th)//2
+    at, atf = attn_auc(Th, Tb, dev), attn_auc(Th[:nt], Th[nt:], dev)
+    print(f"{'ATTN (full 65 tokens)':<26}{at:>13.3f}{atf:>12.3f}{at-atf:>8.3f}")
     print("\n  GAP = human-vs-bot AUC - floor. If STRONG/RAW gap >> weak gap => real headroom the weak")
     print("  reward-disc missed. If all gaps ~equal & small => predictor genuinely near-human (no headroom).")
 
