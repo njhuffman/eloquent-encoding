@@ -298,6 +298,8 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
                             "train/wdl_ce": m["wdl_ce"], "lr": opt.param_groups[0]["lr"]}
                     if "human_ce" in m:
                         logd["train/human_ce"] = m["human_ce"]; logd["train/human_match"] = m["human_match"]
+                    if "nnue_mse" in m:
+                        logd["train/nnue_mse"] = m["nnue_mse"]
                     run.log(logd, step=step)
             if val_dl is not None and val_interval and step > 0 and step % val_interval == 0:
                 v_ce, v_mm = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
