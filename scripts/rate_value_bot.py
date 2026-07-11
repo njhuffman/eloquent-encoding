@@ -16,7 +16,7 @@ from rate_multiband_ladder import bot_record_vs
 
 
 class ValueBot(Player):
-    def __init__(self, checkpoint, band, device="cuda", temperature=0.0, seed=0):
+    def __init__(self, checkpoint, band, device="cuda", temperature=0.0, seed=0, sf_value_head=None):
         ck = torch.load(checkpoint, map_location=device)
         self.model = MultiBandPolicy.from_config(ck["architecture"])
         self.model.load_state_dict(ck["model"], strict=False); self.model.to(device).eval()
@@ -25,6 +25,12 @@ class ValueBot(Player):
         n_elo = int(ck["architecture"]["n_elo_buckets"])
         self.eidx = elo_to_bucket(torch.tensor([band]), n_elo).to(device)
         self.g = torch.Generator(device=device).manual_seed(seed)
+        self.sf_head = None
+        if sf_value_head:                                      # Stockfish-trained value head (elo-free)
+            from style_policy.value_head import WDLHead
+            h = torch.load(sf_value_head, map_location=device)
+            self.sf_head = WDLHead(d_model=h["d_model"], hidden=h["hidden"], elo_dim=0).to(device).eval()
+            self.sf_head.load_state_dict(h["value_head"])
 
     @torch.no_grad()
     def choose_move(self, board):
@@ -39,7 +45,8 @@ class ValueBot(Player):
         packed = torch.from_numpy(np.stack(packs).astype(np.int64)).to(self.dev)
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             cls, _ = self.model.encode(packed, hist=None)
-            wdl = self.model.value_head(cls, elo_idx=self.eidx.expand(len(moves))).float()
+            wdl = (self.sf_head(cls) if self.sf_head is not None
+                   else self.model.value_head(cls, elo_idx=self.eidx.expand(len(moves)))).float()
         p = torch.softmax(wdl, -1)
         opp_val = p[:, 2] - p[:, 0]                             # value for the resulting mover (opponent)
         score = -opp_val                                       # we minimize the opponent's value
@@ -57,10 +64,13 @@ def main():
     ap.add_argument("--levels", type=int, nargs="+", default=[1500, 1700, 1900])
     ap.add_argument("--games-per-level", type=int, default=20); ap.add_argument("--max-plies", type=int, default=300)
     ap.add_argument("--device", default="cuda"); ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--sf-value-head", default="")
     a = ap.parse_args()
     maia, prep = load_maia2("rapid", device=a.device)
-    bot = ValueBot(a.ckpt, a.band, device=a.device, temperature=a.temperature, seed=a.seed)
-    print(f"1-ply VALUE bot ({a.ckpt.split('/')[-1]}, band {a.band}, T={a.temperature}) vs Maia2 {a.levels}", flush=True)
+    bot = ValueBot(a.ckpt, a.band, device=a.device, temperature=a.temperature, seed=a.seed,
+                   sf_value_head=(a.sf_value_head or None))
+    tag = "STOCKFISH-value" if a.sf_value_head else "human-value"
+    print(f"1-ply {tag} bot (band {a.band}, T={a.temperature}) vs Maia2 {a.levels}", flush=True)
     rows, scores = [], []
     for R in a.levels:
         m = Maia2Bot(maia, prep, self_elo=R, seed=a.seed + R)
