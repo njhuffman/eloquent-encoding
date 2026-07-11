@@ -85,7 +85,8 @@ def _routed_human_metrics(model, cls, squares, hidx, from_sq, to_sq, fmask, tmas
 
 
 def _step(model, batch, device, n_elo, ls, vlw, last_move_dropout: float = 0.0,
-          dropout_mode: str = "horizon", distill: bool = False, log_human: bool = False):
+          dropout_mode: str = "horizon", distill: bool = False, log_human: bool = False,
+          nnue_w: float = 0.0):
     packed = batch["packed_pre"].to(device)
     elo = batch["elo_to_move"]
     hidx = model.head_index(elo).to(device)
@@ -112,10 +113,17 @@ def _step(model, batch, device, n_elo, ls, vlw, last_move_dropout: float = 0.0,
         fl, tl = _routed_policy_loss(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask, ls)
     vl = wdl_ce(model.value_head(cls, elo_idx=elo_to_bucket(elo, n_elo).to(device)), result)
     md = {"from_ce": float(fl), "to_ce": float(tl), "wdl_ce": float(vl)}
+    total = fl + tl + vlw * vl
+    if nnue_w > 0.0 and getattr(model, "nnue_head", None) is not None and "nnue_value" in batch:
+        nv = batch["nnue_value"].to(device); nvalid = batch["nnue_valid"].to(device)
+        pred = torch.tanh(model.nnue_head(cls).squeeze(-1))
+        nnue_loss = (((pred - nv) ** 2) * nvalid.float()).sum() / nvalid.float().sum().clamp(min=1.0)
+        total = total + nnue_w * nnue_loss
+        md["nnue_mse"] = float(nnue_loss)
     if log_human:
         h_ce, h_match = _routed_human_metrics(model, cls, squares, hidx, from_sq, to_sq, fmask, tmask)
         md["human_ce"] = h_ce; md["human_match"] = h_match
-    return fl + tl + vlw * vl, md
+    return total, md
 
 
 @torch.no_grad()
@@ -220,7 +228,8 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
     preshuffled = bool(spec.get("preshuffled", False))
     preload = bool(spec.get("preload_ram", False))
     ds = PackedMoveDataset(spec["train_h5"], sample_n=stage["sample"]["n"],
-                           seed=stage["sample"]["seed"], sequential=preshuffled, preload=preload)
+                           seed=stage["sample"]["seed"], sequential=preshuffled, preload=preload,
+                           nnue_path=spec.get("nnue_sidecar"))
     _nw = 0 if preload else int(stage["dataloader_num_workers"])   # preload -> single process (RAM held once)
     dl = DataLoader(ds, batch_size=stage["batch_size"], shuffle=not preshuffled,
                     num_workers=_nw, collate_fn=PackedMoveDataset.collate,
@@ -258,6 +267,7 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
     if distill:
         print("DISTILL mode: factored KL to Maia-3 soft targets (maia_from / maia_to)", flush=True)
     lmd = float(stage.get("last_move_dropout", 0.0))
+    nnue_w = float(stage.get("nnue_weight", 0.0))            # multi-task: weight on the NNUE-eval loss
     dropout_mode = stage.get("history_dropout", "horizon")  # "horizon" (graded) | "binary"
     val_interval = int(stage.get("val_interval", 0)); ckpt_interval = int(stage.get("checkpoint_interval", 0))
     snapshot_steps = {int(s) for s in stage.get("snapshot_steps", [])}  # step-tagged scale milestones
@@ -270,7 +280,7 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
                 break
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
                 loss, m = _step(model, batch, device, n_elo, ls, vlw, last_move_dropout=lmd,
-                                dropout_mode=dropout_mode, distill=distill,
+                                dropout_mode=dropout_mode, distill=distill, nnue_w=nnue_w,
                                 log_human=(step % stage["log_interval"] == 0))
             if not torch.isfinite(loss):
                 raise RuntimeError(f"non-finite loss at step {step}")
@@ -281,7 +291,8 @@ def train_multiband(spec: dict, device: str, *, resume: bool = False) -> dict:
                 sched.step()
             if step % stage["log_interval"] == 0:
                 hstr = f" human_ce={m['human_ce']:.3f} human_match={m['human_match']:.2f}%" if "human_ce" in m else ""
-                print(f"step={step}/{total_steps} from_ce={m['from_ce']:.3f} to_ce={m['to_ce']:.3f} wdl={m['wdl_ce']:.3f}{hstr}", flush=True)
+                nstr = f" nnue_mse={m['nnue_mse']:.4f}" if "nnue_mse" in m else ""
+                print(f"step={step}/{total_steps} from_ce={m['from_ce']:.3f} to_ce={m['to_ce']:.3f} wdl={m['wdl_ce']:.3f}{nstr}{hstr}", flush=True)
                 if run is not None:
                     logd = {"train/from_ce": m["from_ce"], "train/to_ce": m["to_ce"],
                             "train/wdl_ce": m["wdl_ce"], "lr": opt.param_groups[0]["lr"]}

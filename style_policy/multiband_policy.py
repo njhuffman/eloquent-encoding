@@ -11,11 +11,12 @@ BANDS = list(range(1000, 2000, 100))  # 1000..1900
 
 
 class MultiBandPolicy(nn.Module):
-    def __init__(self, encoder, heads, value_head, bands=BANDS):
+    def __init__(self, encoder, heads, value_head, bands=BANDS, nnue_head=None):
         super().__init__()
         self.encoder = encoder
         self.heads = nn.ModuleList(heads)
         self.value_head = value_head
+        self.nnue_head = nnue_head          # optional: predicts Stockfish static NNUE eval (value, tanh)
         self.bands = list(bands)
         self.n_bands = len(self.bands)
 
@@ -34,7 +35,10 @@ class MultiBandPolicy(nn.Module):
         heads = [BandHead(d, h, use_cls=use_cls) for _ in bands]
         value = WDLHead(d_model=d, hidden=h, elo_dim=int(cfg.get("elo_dim", 0)),
                         n_elo_buckets=int(cfg.get("n_elo_buckets", 0)))
-        return cls(enc, heads, value, bands=bands)
+        nnue = None
+        if cfg.get("nnue_head", False):     # NNUE-eval regression head on CLS (value in [-1,1] via tanh)
+            nnue = nn.Sequential(nn.Linear(d, h), nn.GELU(), nn.Linear(h, 1))
+        return cls(enc, heads, value, bands=bands, nnue_head=nnue)
 
     def encode(self, packed_pre, hist=None):
         board = packed_to_board_tensor(packed_pre).to(next(self.parameters()).device)

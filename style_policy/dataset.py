@@ -12,11 +12,13 @@ _FIELDS_U8 = ("from_sq", "to_sq", "promotion")
 _HIST_ABSENT_SQ = -1
 _HIST_ABSENT_CAP = 0
 _HIST_LEN = 4
+_NNUE_NA = -32001                      # Stockfish static-eval sentinel (in-check positions)
 
 
 class PackedMoveDataset(Dataset):
     def __init__(self, h5_path: str | Path, *, sample_n: int | None = None, seed: int = 0,
-                 band: tuple[int, int] | None = None, sequential: bool = False, preload: bool = False):
+                 band: tuple[int, int] | None = None, sequential: bool = False, preload: bool = False,
+                 nnue_path: str | Path | None = None):
         self.path = str(h5_path)
         with h5py.File(self.path, "r") as f:
             n = int(f["packed_pre"].shape[0])
@@ -49,11 +51,23 @@ class PackedMoveDataset(Dataset):
             if self._has_soft: _keys += ["maia_from", "maia_to"]
             with h5py.File(self.path, "r") as f:
                 self._ram = {k: f[k][:] for k in _keys}
+        # Optional Stockfish static-NNUE eval sidecar (row-aligned) for the multi-task NNUE head.
+        self._nnue_path = str(nnue_path) if nnue_path is not None else None
+        self._nnue_ram: np.ndarray | None = None
+        self._nnue_f: h5py.File | None = None
+        if self._nnue_path is not None and preload:
+            with h5py.File(self._nnue_path, "r") as nf:
+                self._nnue_ram = nf["sf_static_cp"][:]
 
     def _file(self) -> h5py.File:
         if self._f is None:
             self._f = h5py.File(self.path, "r")  # opened per-worker
         return self._f
+
+    def _nnue_file(self) -> h5py.File:
+        if self._nnue_f is None:
+            self._nnue_f = h5py.File(self._nnue_path, "r")
+        return self._nnue_f
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -84,6 +98,11 @@ class PackedMoveDataset(Dataset):
         if self._has_soft:
             out["maia_from"] = torch.from_numpy(src["maia_from"][idx].astype(np.float32))
             out["maia_to"]   = torch.from_numpy(src["maia_to"][idx].astype(np.float32))
+        if self._nnue_path is not None:
+            cp = int(self._nnue_ram[idx]) if self._nnue_ram is not None else int(self._nnue_file()["sf_static_cp"][idx])
+            valid = cp != _NNUE_NA
+            out["nnue_value"] = torch.tensor(float(np.tanh(cp / 400.0)) if valid else 0.0, dtype=torch.float32)
+            out["nnue_valid"] = torch.tensor(valid, dtype=torch.bool)
         return out
 
     @staticmethod
