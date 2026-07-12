@@ -41,6 +41,40 @@ encoder actually learn the eval when it's a training target?
    labeled rows; the sidecar joins to the training h5 by row).
 3. Config `multiband_ourdistill_human_nnue.yaml` (= human config + nnue head/target + sidecar path).
 
+## Pass 1 — RESULTS (2026-07-11): free lunch ✅
+
+Target changed static `eval` → **depth-1 SF search cp** (tanh(cp/400), STM). The verbose static
+`eval` command recomputes the full per-piece NNUE contribution table (~40 evals) per call (10.8ms);
+depth-1 is 6× faster (1.6ms, 32M in ~1.7h @14 workers) and a better target — it resolves the
+immediate tactic instead of scoring as if quiet. Labeled full 32M, 0 NA. Model = `multiband_ourdistill_human_nnue` (256/8, no-history, nnue_weight=1.0), trained 125k steps
+(~5h), vs the `multiband_ourdistill_human` baseline. All metrics on held-out 2025-05 val, positions
+freshly depth-1-labeled (no train contamination).
+
+**1. Move prediction — NOT hurt (consistent small help).** Joint move-match, n=30k/band:
+| band | baseline | nnue | Δ |
+|---|---|---|---|
+| 1000 | 46.7% | 47.0% | +0.3 |
+| 1500 | 48.8% | 49.0% | +0.2 |
+| 2000 | 49.5% | 50.2% | +0.7 |
+nnue ≥ baseline at every band (CE also lower everywhere). Direction is consistent → real, not noise.
+
+**2. WDL — NOT hurt (tiny help).** n=40k held-out: CE 0.7146→**0.7094**, acc 64.5%→**64.8%**.
+
+**3. New eval capability — gained.** Held-out depth-1-eval decodability (Pearson r):
+- baseline frozen-features probe: **0.878** (encoder already linearly carries eval)
+- nnue frozen-features probe: **0.909** (+0.031, ~15 SE — co-training pushed eval further into features)
+- nnue trained head, zero-shot: **0.935** (MSE 0.034)
+So one forward pass now yields an objective eval at r≈0.94 — the human-vs-best divergence signal, no
+Stockfish at inference.
+
+**4. Concept features — unchanged.** material 0.904→0.907, mobility 0.809→0.811, hanging 0.412→0.426,
+king_safety 0.583→0.565, isolated 0.299→0.317 — small bidirectional noise, no systematic shift
+(unlike Maia-3 distillation which lifted 7/8). Eval content added *without* disturbing existing concepts.
+
+**Verdict:** adding the SF-eval objective is a free lunch — no cost to human-play or WDL (both a hair
+better), a genuine objective-eval head (r=0.935), encoder otherwise unchanged. Gate to Pass 2 PASSED.
+Tools: `scripts/compare_nnue_multitask.py` (WDL+eval), `scripts/move_match.py`, `scripts/concept_probe.py`.
+
 ## Status
-- Static-NNUE throughput benchmarked: 628/s single, ~7.5–10k/s @ 12–16 workers (32M ~1h).
-- Decisions locked: static NNUE target, label full, eval-head only for Pass 1.
+- Pass 1 complete, free-lunch result → Pass 2 gated open (128M-style wider run + SF-best-move head).
+- Decisions locked: depth-1 SF-eval target, label full, eval-head only for Pass 1 (SF-move head deferred to Pass 2).
