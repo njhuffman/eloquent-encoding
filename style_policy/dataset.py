@@ -22,7 +22,7 @@ class PackedMoveDataset(Dataset):
                  band: tuple[int, int] | None = None, sequential: bool = False, preload: bool = False,
                  nnue_path: str | Path | None = None,
                  sf_labels_path: str | Path | None = None, flat_mask: bool = False,
-                 flat_moves: bool = False, indices: np.ndarray | None = None):
+                 flat_moves: bool = False, indices: np.ndarray | None = None, lean: bool = False):
         self.path = str(h5_path)
         with h5py.File(self.path, "r") as f:
             n = int(f["packed_pre"].shape[0])
@@ -69,6 +69,7 @@ class PackedMoveDataset(Dataset):
         self._sf_f: h5py.File | None = None
         self._flat_mask = bool(flat_mask)
         self._flat_moves = bool(flat_moves) or bool(flat_mask)   # provide human_move_idx (cheap, no board)
+        self._lean = bool(lean)                                  # read ONLY fields unmasked-flat train uses
 
     def _file(self) -> h5py.File:
         if self._f is None:
@@ -91,6 +92,21 @@ class PackedMoveDataset(Dataset):
     def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
         idx = int(self.indices[i])
         src = self._ram if self._ram is not None else self._file()
+        if self._lean:                                          # minimal fields for unmasked flat train
+            sf = self._sf_file()
+            cp = int(sf["sf_cp"][idx]); bf = int(sf["sf_best_from"][idx]); bt = int(sf["sf_best_to"][idx])
+            cpv = cp != _NNUE_NA; mv = bf >= 0
+            return {
+                "packed_pre": torch.from_numpy(src["packed_pre"][idx].astype(np.uint8)),
+                "elo_to_move": torch.tensor(int(src["elo_to_move"][idx]), dtype=torch.int64),
+                "result": torch.tensor(int(src["result"][idx]), dtype=torch.int64),
+                "human_move_idx": torch.tensor(
+                    move_index.move_to_index(int(src["from_sq"][idx]), int(src["to_sq"][idx])), dtype=torch.int64),
+                "nnue_value": torch.tensor(float(np.tanh(cp / 400.0)) if cpv else 0.0, dtype=torch.float32),
+                "nnue_valid": torch.tensor(cpv, dtype=torch.bool),
+                "sf_move_idx": torch.tensor(move_index.move_to_index(bf, bt) if mv else 0, dtype=torch.int64),
+                "sf_move_valid": torch.tensor(mv, dtype=torch.bool),
+            }
         out = {
             "packed_pre": torch.from_numpy(src["packed_pre"][idx].astype(np.uint8)),
             "from_legal_u64": torch.from_numpy(np.array(src["from_legal_u64"][idx], dtype=np.uint64)).to(torch.int64),

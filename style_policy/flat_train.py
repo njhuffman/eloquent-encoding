@@ -146,7 +146,7 @@ def train_flat_follow(spec: dict, device: str, *, resume: bool = False) -> dict:
             print(f"  caught up at cursor={cursor:,}/{N:,} (labeled≈{F:,}); sleeping {sleep_s}s", flush=True)
             time.sleep(sleep_s); continue
         ds = PackedMoveDataset(spec["train_h5"], indices=np.arange(cursor, target),
-                               sf_labels_path=sf_path, flat_moves=True)     # unmasked: no board recon
+                               sf_labels_path=sf_path, flat_moves=True, lean=True)   # unmasked, minimal fields
         dl = DataLoader(ds, batch_size=bs, shuffle=False, num_workers=nw, collate_fn=PackedMoveDataset.collate,
                         pin_memory=(device == "cuda"), persistent_workers=False,
                         prefetch_factor=(6 if nw > 0 else None))
