@@ -5,6 +5,8 @@ import h5py
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from style_policy import move_index
+from style_policy.board_encode import packed_to_board
 
 _FIELDS_U8 = ("from_sq", "to_sq", "promotion")
 
@@ -18,7 +20,8 @@ _NNUE_NA = -32768                      # Stockfish-eval NA sentinel; must match 
 class PackedMoveDataset(Dataset):
     def __init__(self, h5_path: str | Path, *, sample_n: int | None = None, seed: int = 0,
                  band: tuple[int, int] | None = None, sequential: bool = False, preload: bool = False,
-                 nnue_path: str | Path | None = None):
+                 nnue_path: str | Path | None = None,
+                 sf_labels_path: str | Path | None = None, flat_mask: bool = False):
         self.path = str(h5_path)
         with h5py.File(self.path, "r") as f:
             n = int(f["packed_pre"].shape[0])
@@ -58,6 +61,10 @@ class PackedMoveDataset(Dataset):
         if self._nnue_path is not None and preload:
             with h5py.File(self._nnue_path, "r") as nf:
                 self._nnue_ram = nf["sf_cp"][:]
+        # Pass-2: SF eval+bestmove sidecar (sf_cp, sf_best_from/to) + exact 1792 flat legal mask.
+        self._sf_path = str(sf_labels_path) if sf_labels_path is not None else None
+        self._sf_f: h5py.File | None = None
+        self._flat_mask = bool(flat_mask)
 
     def _file(self) -> h5py.File:
         if self._f is None:
@@ -68,6 +75,11 @@ class PackedMoveDataset(Dataset):
         if self._nnue_f is None:
             self._nnue_f = h5py.File(self._nnue_path, "r")
         return self._nnue_f
+
+    def _sf_file(self) -> h5py.File:
+        if self._sf_f is None:
+            self._sf_f = h5py.File(self._sf_path, "r")  # opened per-worker
+        return self._sf_f
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -103,6 +115,22 @@ class PackedMoveDataset(Dataset):
             valid = cp != _NNUE_NA
             out["nnue_value"] = torch.tensor(float(np.tanh(cp / 400.0)) if valid else 0.0, dtype=torch.float32)
             out["nnue_valid"] = torch.tensor(valid, dtype=torch.bool)
+        # Pass-2 flat mode: exact per-position 1792 legal mask + flat human-move-index target.
+        if self._flat_mask:
+            board = packed_to_board(src["packed_pre"][idx].astype(np.uint8))
+            out["legal_mask"] = torch.from_numpy(move_index.legal_index_mask(board))       # (1792,) bool
+            out["human_move_idx"] = torch.tensor(
+                move_index.move_to_index(int(src["from_sq"][idx]), int(src["to_sq"][idx])), dtype=torch.int64)
+        # Pass-2 SF sidecar: eval (tanh cp) + best-move flat index (invalid where SF failed/unlabeled).
+        if self._sf_path is not None:
+            sf = self._sf_file()
+            cp = int(sf["sf_cp"][idx]); bf = int(sf["sf_best_from"][idx]); bt = int(sf["sf_best_to"][idx])
+            cpv = cp != _NNUE_NA
+            out["nnue_value"] = torch.tensor(float(np.tanh(cp / 400.0)) if cpv else 0.0, dtype=torch.float32)
+            out["nnue_valid"] = torch.tensor(cpv, dtype=torch.bool)
+            mv = bf >= 0
+            out["sf_move_idx"] = torch.tensor(move_index.move_to_index(bf, bt) if mv else 0, dtype=torch.int64)
+            out["sf_move_valid"] = torch.tensor(mv, dtype=torch.bool)
         return out
 
     @staticmethod

@@ -26,6 +26,7 @@ class FlatMoveHead(nn.Module):
     def __init__(self, d_model: int, k: int = 64, cond_dim: int = 0):
         super().__init__()
         self.k = k
+        self.norm = nn.LayerNorm(d_model)                       # stabilize logit magnitude vs encoder scale
         self.q = nn.Linear(d_model, k)
         self.key = nn.Linear(d_model, k)
         self.film = nn.Linear(d_model + cond_dim, 2 * d_model)   # FiLM squares from cls (+ elo cond)
@@ -34,7 +35,7 @@ class FlatMoveHead(nn.Module):
     def forward(self, cls: torch.Tensor, squares: torch.Tensor, cond: torch.Tensor | None = None) -> torch.Tensor:
         c = cls if cond is None else torch.cat([cls, cond], dim=-1)
         gamma, beta = self.film(c).chunk(2, dim=-1)             # (B,d) each
-        sq = squares * (1 + gamma.unsqueeze(1)) + beta.unsqueeze(1)   # (B,64,d)
+        sq = self.norm(squares * (1 + gamma.unsqueeze(1)) + beta.unsqueeze(1))   # (B,64,d)
         q = self.q(sq); key = self.key(sq)                     # (B,64,k)
         s = torch.einsum("bfk,btk->bft", q, key) / (self.k ** 0.5)   # (B,64,64)
         return s.reshape(s.shape[0], 64 * 64).index_select(1, self.idx_ft)   # (B,1792)
@@ -85,8 +86,9 @@ class FlatMultiTaskPolicy(nn.Module):
 
 def masked_move_ce(logits: torch.Tensor, target_idx: torch.Tensor, legal_mask: torch.Tensor,
                    valid: torch.Tensor | None = None) -> torch.Tensor:
-    """Cross-entropy over the legal 1792 moves. `valid` (B,) bool masks out rows w/o a target
-    (e.g. SF best-move failures); returns mean over valid rows (0 if none)."""
+    """Cross-entropy over the legal 1792 moves (plain CE — label smoothing is unsafe here: the
+    smoothing mass would land on the -inf-masked classes and blow up. `valid` (B,) bool masks out
+    rows w/o a target (SF best-move failures / unlabeled); mean over valid rows (0 if none)."""
     masked = logits.masked_fill(~legal_mask, _NEG)
     ce = nn.functional.cross_entropy(masked, target_idx, reduction="none")
     if valid is None:

@@ -1,0 +1,39 @@
+# End-to-end smoke of the Pass-2 flat training path (tiny sample, few steps, no wandb, no compile).
+name: flat_smoke
+checkpoint_dir: /tmp/flat_smoke_ckpt
+train_h5: /mnt/eloquence_bulk/databases/wdl_history_128M.h5
+sf_labels: /mnt/eloquence_bulk/databases/wdl_history_128M.sflabels.h5
+preshuffled: true
+architecture:
+  d_model: 512
+  n_layers: 8
+  nhead: 8
+  dim_feedforward: 2048
+  dropout: 0.0
+  head_hidden: 1024
+  elo_dim: 32
+  n_elo_buckets: 40
+  use_castling_ep: true
+  n_history_ply: 0
+defaults:
+  batch_size: 128
+  dataloader_num_workers: 4
+  use_amp: true
+  amp_dtype: bf16
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 10
+  val_interval: 0
+  checkpoint_interval: 20
+  lr_schedule: cosine
+  warmup_steps: 20
+  lr_min_frac: 0.0
+  seed: 0
+  human_weight: 1.0
+  sf_move_weight: 1.0
+  value_loss_weight: 1.0
+  nnue_weight: 1.0
+  compile: false
+stages:
+  - sample: {n: 12800, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0002}

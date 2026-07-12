@@ -1,0 +1,47 @@
+# Pass-2 (2026-07-12): the "real" multi-task model. 512/8 encoder, NO history, FLAT 1792-move heads
+# (not factored), SINGLE elo-conditioned human head (replaces 12 per-band) + Stockfish depth-8
+# best-move head + SF depth-8 eval head + WDL. One forward pass -> human play + best play + objective
+# eval + WDL, no Stockfish at inference. Legal mask is the EXACT 1792 set from board reconstruction in
+# the dataloader (num_workers=8). Trained on 123.68M human moves + the depth-8 SF sidecar.
+name: flat_multitask_128M
+checkpoint_dir: style_policy_checkpoints/flat_multitask_128M
+train_h5: /mnt/eloquence_bulk/databases/wdl_history_128M.h5
+sf_labels: /mnt/eloquence_bulk/databases/wdl_history_128M.sflabels.h5
+val_h5: /mnt/eloquence_bulk/databases/wdl_validation_2025_05.h5
+val_sample: {n: 20000, seed: 42}
+preshuffled: true
+wandb:
+  project: style_policy
+  mode: online
+architecture:
+  d_model: 512
+  n_layers: 8
+  nhead: 8
+  dim_feedforward: 2048
+  dropout: 0.0
+  head_hidden: 1024
+  elo_dim: 32
+  n_elo_buckets: 40
+  use_castling_ep: true
+  n_history_ply: 0
+defaults:
+  batch_size: 256
+  dataloader_num_workers: 8
+  use_amp: true
+  amp_dtype: bf16
+  weight_decay: 0.01
+  max_gradient_norm: 1.0
+  log_interval: 50
+  val_interval: 5000
+  checkpoint_interval: 5000
+  lr_schedule: cosine
+  warmup_steps: 2000
+  lr_min_frac: 0.0
+  seed: 0
+  human_weight: 1.0        # primary task
+  sf_move_weight: 1.0      # Stockfish best-move head
+  value_loss_weight: 1.0   # WDL head
+  nnue_weight: 1.0         # SF eval head (tanh cp)
+stages:
+  - sample: {n: 123680000, seed: 1}
+    train: {epochs: 1, learning_rate: 0.0002}
