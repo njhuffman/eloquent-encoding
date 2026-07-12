@@ -84,12 +84,12 @@ class FlatMultiTaskPolicy(nn.Module):
         return torch.tanh(self.eval_head(cls).squeeze(-1))     # (B,) in [-1,1]
 
 
-def masked_move_ce(logits: torch.Tensor, target_idx: torch.Tensor, legal_mask: torch.Tensor,
+def masked_move_ce(logits: torch.Tensor, target_idx: torch.Tensor, legal_mask: torch.Tensor | None = None,
                    valid: torch.Tensor | None = None) -> torch.Tensor:
-    """Cross-entropy over the legal 1792 moves (plain CE — label smoothing is unsafe here: the
-    smoothing mass would land on the -inf-masked classes and blow up. `valid` (B,) bool masks out
-    rows w/o a target (SF best-move failures / unlabeled); mean over valid rows (0 if none)."""
-    masked = logits.masked_fill(~legal_mask, _NEG)
+    """Cross-entropy over the 1792 moves. If legal_mask is given, restrict to legal moves (inference /
+    masked train); if None, plain CE over all 1792 (unmasked train — the model learns legality; mask
+    only at inference). `valid` (B,) bool masks out rows w/o a target (SF failures / unlabeled)."""
+    masked = logits if legal_mask is None else logits.masked_fill(~legal_mask, _NEG)
     ce = nn.functional.cross_entropy(masked, target_idx, reduction="none")
     if valid is None:
         return ce.mean()

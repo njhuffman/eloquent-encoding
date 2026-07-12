@@ -2,8 +2,10 @@
 Four losses: human-move CE (flat, elo-cond) + SF-best-move CE (flat) + WDL CE + eval MSE, all over the
 exact 1792 legal mask supplied by the dataloader. Mirrors multiband_train's scaffolding."""
 from __future__ import annotations
-import math
+import math, time
 from pathlib import Path
+import h5py
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from style_policy.flat_policy import FlatMultiTaskPolicy, masked_move_ce
@@ -16,7 +18,7 @@ from style_policy.multiband_train import _init_wandb
 def _step(model, batch, device, n_elo, w, log_extra=False):
     packed = batch["packed_pre"].to(device)
     elo_b = elo_to_bucket(batch["elo_to_move"], n_elo).to(device)
-    legal = batch["legal_mask"].to(device)                       # (B,1792) bool
+    legal = batch["legal_mask"].to(device) if "legal_mask" in batch else None   # None = unmasked train
     h_tgt = batch["human_move_idx"].to(device)
     result = batch["result"].to(device)
     s_tgt = batch["sf_move_idx"].to(device); s_valid = batch["sf_move_valid"].to(device)
@@ -34,10 +36,11 @@ def _step(model, batch, device, n_elo, w, log_extra=False):
     md = {"human_ce": float(h_ce), "sf_move_ce": float(s_ce), "wdl_ce": float(w_ce), "eval_mse": float(e_mse)}
     if log_extra:
         with torch.no_grad():
-            hm = (h_logits.masked_fill(~legal, -1e9).argmax(-1) == h_tgt).float().mean()
-            sm = ((s_logits.masked_fill(~legal, -1e9).argmax(-1) == s_tgt).float() * s_valid.float()).sum() \
-                / s_valid.float().sum().clamp(min=1.0)
-            md["human_match"] = float(hm) * 100.0; md["sf_move_match"] = float(sm) * 100.0
+            hl = h_logits if legal is None else h_logits.masked_fill(~legal, -1e9)
+            sl = s_logits if legal is None else s_logits.masked_fill(~legal, -1e9)
+            md["human_match"] = float((hl.argmax(-1) == h_tgt).float().mean()) * 100.0
+            md["sf_move_match"] = float(((sl.argmax(-1) == s_tgt).float() * s_valid.float()).sum()
+                                        / s_valid.float().sum().clamp(min=1.0)) * 100.0
     return total, md
 
 
@@ -66,6 +69,120 @@ def _export(model, arch, ckpt_dir, name, do_compile):
     torch.save({"architecture": arch, "model": sd}, ckpt_dir / f"{name}.pt")
     enc_sd = {k: v for k, v in sd.items() if k.startswith("encoder.") or k.startswith("value_head.")}
     torch.save({"architecture": arch, "model": enc_sd}, ckpt_dir / f"{name}_encoder.pt")
+
+
+def _labeled_frontier(sf_path: str) -> int:
+    """Largest F such that rows [0,F) are all labeled (contiguous done-prefix). Conservative vs the
+    labeler's ragged imap_unordered edge."""
+    with h5py.File(sf_path, "r") as o:
+        done = o["done"][:]
+    nz = np.nonzero(done == 0)[0]
+    return int(nz[0]) if len(nz) else int(len(done))
+
+
+def train_flat_follow(spec: dict, device: str, *, resume: bool = False) -> dict:
+    """Overlap mode: train (unmasked) while labeling runs. March through the preshuffled rows 0..N in
+    order, never passing (labeled_frontier - margin); when caught up, sleep and re-check. Both this and
+    the labeler are resumable, so a kill of either just resumes. Trains in bounded chunks so a mid-chunk
+    kill redoes at most `follow_max_chunk` rows."""
+    stage = spec["stages"][0]; arch = spec["architecture"]; n_elo = int(arch["n_elo_buckets"])
+    name = spec["name"]; ckpt_dir = Path(spec["checkpoint_dir"]); ckpt_dir.mkdir(parents=True, exist_ok=True)
+    use_amp = bool(stage["use_amp"]); amp_dtype = torch.bfloat16
+    if device == "cuda":
+        torch.set_float32_matmul_precision("high")
+    with h5py.File(spec["train_h5"], "r") as f:
+        N = int(f["packed_pre"].shape[0])
+    N = min(N, int(spec.get("max_rows", N)))                     # test hook: cap the run length
+    model = FlatMultiTaskPolicy.from_config(arch).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=stage["train"]["learning_rate"],
+                            weight_decay=stage["weight_decay"], fused=(device == "cuda"))
+    w = {"human": float(stage.get("human_weight", 1.0)), "sf_move": float(stage.get("sf_move_weight", 1.0)),
+         "wdl": float(stage.get("value_loss_weight", 1.0)), "eval": float(stage.get("nnue_weight", 1.0))}
+    bs = int(stage["batch_size"]); nw = int(stage["dataloader_num_workers"])
+    total_steps = math.ceil(N / bs)
+    warmup = int(stage.get("warmup_steps", 0)); lr_min = float(stage.get("lr_min_frac", 0.0))
+    sched = None
+    if str(stage.get("lr_schedule", "constant")) == "cosine":
+        def _lam(s):
+            if warmup > 0 and s < warmup:
+                return (s + 1) / warmup
+            p = min(1.0, (s - warmup) / max(1, total_steps - warmup))
+            return lr_min + (1.0 - lr_min) * 0.5 * (1.0 + math.cos(math.pi * p))
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, _lam)
+    do_compile = bool(stage.get("compile", True)) and device == "cuda"
+    if do_compile:
+        model.encoder = torch.compile(model.encoder)
+
+    val_dl = None
+    if spec.get("val_h5") and spec.get("val_sample"):
+        vds = PackedMoveDataset(spec["val_h5"], sample_n=spec["val_sample"]["n"], seed=spec["val_sample"]["seed"],
+                                flat_mask=True)
+        val_dl = DataLoader(vds, batch_size=bs, shuffle=False, num_workers=nw, collate_fn=PackedMoveDataset.collate)
+
+    resume_path = ckpt_dir / f"{name}.resume.pt"; step = 0; best = float("inf"); cursor = 0
+    if resume and resume_path.exists():
+        st = torch.load(resume_path, map_location=device)
+        model.load_state_dict(st["model"]); opt.load_state_dict(st["optimizer"])
+        step = int(st["step"]); best = float(st["best"]); cursor = int(st.get("cursor", 0))
+        if sched is not None and st.get("scheduler"):
+            sched.load_state_dict(st["scheduler"])
+        print(f"resumed at cursor={cursor:,} step={step}", flush=True)
+
+    margin = int(spec.get("follow_margin", 500000)); sleep_s = int(spec.get("follow_sleep", 600))
+    max_chunk = int(spec.get("follow_max_chunk", 500000)); sf_path = spec["sf_labels"]
+    li = int(stage["log_interval"]); vi = int(stage.get("val_interval", 0))
+    print(f"flat FOLLOW train: {name} N={N:,} total_steps={total_steps} margin={margin:,} "
+          f"sleep={sleep_s}s compile={'on' if do_compile else 'off'} weights={w}", flush=True)
+    run = _init_wandb(spec, stage, device); model.train()
+
+    def _save():
+        torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "step": step,
+                    "best": best, "cursor": cursor, "scheduler": sched.state_dict() if sched else None}, resume_path)
+
+    while cursor < N:
+        target = min(N, _labeled_frontier(sf_path) - margin, cursor + max_chunk)
+        if target <= cursor:
+            F = _labeled_frontier(sf_path)
+            print(f"  caught up at cursor={cursor:,}/{N:,} (labeled≈{F:,}); sleeping {sleep_s}s", flush=True)
+            time.sleep(sleep_s); continue
+        ds = PackedMoveDataset(spec["train_h5"], indices=np.arange(cursor, target),
+                               sf_labels_path=sf_path, flat_moves=True)     # unmasked: no board recon
+        dl = DataLoader(ds, batch_size=bs, shuffle=False, num_workers=nw, collate_fn=PackedMoveDataset.collate,
+                        pin_memory=(device == "cuda"), persistent_workers=False,
+                        prefetch_factor=(6 if nw > 0 else None))
+        for batch in dl:
+            with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp and device == "cuda"):
+                loss, m = _step(model, batch, device, n_elo, w, log_extra=(step % li == 0))
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"non-finite loss at step {step}")
+            opt.zero_grad(set_to_none=True); loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), stage["max_gradient_norm"])
+            opt.step()
+            if sched is not None:
+                sched.step()
+            if step % li == 0:
+                print(f"step={step}/{total_steps} cursor={cursor:,} human_ce={m['human_ce']:.3f} "
+                      f"sf_move_ce={m['sf_move_ce']:.3f} wdl={m['wdl_ce']:.3f} eval_mse={m['eval_mse']:.4f} "
+                      f"human_match={m['human_match']:.2f}% sf_match={m['sf_move_match']:.2f}%", flush=True)
+                if run is not None:
+                    run.log({f"train/{k}": v for k, v in m.items()} |
+                            {"lr": opt.param_groups[0]["lr"], "cursor": cursor}, step=step)
+            if val_dl is not None and vi and step > 0 and step % vi == 0:
+                v_ce, v_mm = _validate(model, val_dl, device, n_elo, use_amp, amp_dtype)
+                print(f"  [val step={step}] human_ce={v_ce:.4f} human_match={v_mm:.2f}%", flush=True)
+                best = min(best, v_ce)
+                if run is not None:
+                    run.log({"val/human_ce": v_ce, "val/human_match": v_mm}, step=step)
+            step += 1
+        cursor = target; _save()
+        print(f"  chunk done -> cursor={cursor:,}/{N:,} ({100*cursor/N:.1f}%) [checkpointed]", flush=True)
+
+    _export(model, arch, ckpt_dir, name, do_compile)
+    fv_ce, fv_mm = (_validate(model, val_dl, device, n_elo, use_amp, amp_dtype) if val_dl else (float("nan"), float("nan")))
+    print(f"saved {ckpt_dir}/{name}.pt + encoder; final human_ce={fv_ce:.4f} human_match={fv_mm:.2f}%", flush=True)
+    if run is not None:
+        run.finish()
+    return {"steps": step, "final_human_ce": fv_ce, "final_human_match": fv_mm}
 
 
 def train_flat(spec: dict, device: str, *, resume: bool = False) -> dict:

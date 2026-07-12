@@ -21,7 +21,8 @@ class PackedMoveDataset(Dataset):
     def __init__(self, h5_path: str | Path, *, sample_n: int | None = None, seed: int = 0,
                  band: tuple[int, int] | None = None, sequential: bool = False, preload: bool = False,
                  nnue_path: str | Path | None = None,
-                 sf_labels_path: str | Path | None = None, flat_mask: bool = False):
+                 sf_labels_path: str | Path | None = None, flat_mask: bool = False,
+                 flat_moves: bool = False, indices: np.ndarray | None = None):
         self.path = str(h5_path)
         with h5py.File(self.path, "r") as f:
             n = int(f["packed_pre"].shape[0])
@@ -43,6 +44,8 @@ class PackedMoveDataset(Dataset):
                 self.indices = np.sort(rng.choice(pool, size=sample_n, replace=False))
         else:
             self.indices = pool  # nonzero()/arange() are already ascending
+        if indices is not None:                            # explicit row range (overlap chunk training)
+            self.indices = np.asarray(indices, dtype=np.int64)
         self._f: h5py.File | None = None
         # Optional RAM preload: load full fields into memory (index by h5-row) -> no per-row h5
         # reads. Use num_workers=0 (else each worker duplicates the arrays -> OOM).
@@ -65,6 +68,7 @@ class PackedMoveDataset(Dataset):
         self._sf_path = str(sf_labels_path) if sf_labels_path is not None else None
         self._sf_f: h5py.File | None = None
         self._flat_mask = bool(flat_mask)
+        self._flat_moves = bool(flat_moves) or bool(flat_mask)   # provide human_move_idx (cheap, no board)
 
     def _file(self) -> h5py.File:
         if self._f is None:
@@ -115,12 +119,14 @@ class PackedMoveDataset(Dataset):
             valid = cp != _NNUE_NA
             out["nnue_value"] = torch.tensor(float(np.tanh(cp / 400.0)) if valid else 0.0, dtype=torch.float32)
             out["nnue_valid"] = torch.tensor(valid, dtype=torch.bool)
-        # Pass-2 flat mode: exact per-position 1792 legal mask + flat human-move-index target.
+        # Pass-2 flat move target (cheap: from stored from/to, no board reconstruction).
+        if self._flat_moves:
+            out["human_move_idx"] = torch.tensor(
+                move_index.move_to_index(int(src["from_sq"][idx]), int(src["to_sq"][idx])), dtype=torch.int64)
+        # Exact 1792 legal mask (board reconstruction — expensive; used at inference/eval or masked train).
         if self._flat_mask:
             board = packed_to_board(src["packed_pre"][idx].astype(np.uint8))
             out["legal_mask"] = torch.from_numpy(move_index.legal_index_mask(board))       # (1792,) bool
-            out["human_move_idx"] = torch.tensor(
-                move_index.move_to_index(int(src["from_sq"][idx]), int(src["to_sq"][idx])), dtype=torch.int64)
         # Pass-2 SF sidecar: eval (tanh cp) + best-move flat index (invalid where SF failed/unlabeled).
         if self._sf_path is not None:
             sf = self._sf_file()

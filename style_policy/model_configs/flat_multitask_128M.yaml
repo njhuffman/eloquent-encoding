@@ -10,6 +10,11 @@ sf_labels: /mnt/eloquence_bulk/databases/wdl_history_128M.sflabels.h5
 val_h5: /mnt/eloquence_bulk/databases/wdl_validation_2025_05.h5
 val_sample: {n: 20000, seed: 42}
 preshuffled: true
+# --follow (overlap) mode: train the preshuffled rows in order, staying `follow_margin` behind the
+# labeled frontier; sleep `follow_sleep`s when caught up; checkpoint every `follow_max_chunk` rows.
+follow_margin: 500000
+follow_sleep: 600
+follow_max_chunk: 500000
 wandb:
   project: style_policy
   mode: online
