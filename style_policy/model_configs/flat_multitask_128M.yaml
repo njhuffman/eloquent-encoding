@@ -31,7 +31,7 @@ architecture:
   n_history_ply: 0
 defaults:
   batch_size: 256
-  dataloader_num_workers: 8
+  dataloader_num_workers: 4
   use_amp: true
   amp_dtype: bf16
   weight_decay: 0.01

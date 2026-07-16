@@ -140,9 +140,10 @@ def train_flat_follow(spec: dict, device: str, *, resume: bool = False) -> dict:
                     "best": best, "cursor": cursor, "scheduler": sched.state_dict() if sched else None}, resume_path)
 
     while cursor < N:
-        target = min(N, _labeled_frontier(sf_path) - margin, cursor + max_chunk)
+        F = _labeled_frontier(sf_path)
+        edge = F if F >= N else F - margin           # once labeling is COMPLETE, drop the margin -> train to the end
+        target = min(N, edge, cursor + max_chunk)
         if target <= cursor:
-            F = _labeled_frontier(sf_path)
             print(f"  caught up at cursor={cursor:,}/{N:,} (labeled≈{F:,}); sleeping {sleep_s}s", flush=True)
             time.sleep(sleep_s); continue
         ds = PackedMoveDataset(spec["train_h5"], indices=np.arange(cursor, target),
